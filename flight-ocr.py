@@ -38,71 +38,36 @@ class FlightGridOCR:
         self.debug = debug
 
     def process_images(self) -> None:
-        """Process only the first PNG image in the directory for testing purposes, ignoring files with an underscore prefix."""
-        img_files = [f for f in self.img_dir.glob("*.png") if not f.name.startswith("_")]
-        if img_files:
-            img_file = img_files[0]
+        """Process all PNG images in the directory and extract data."""
+        for img_file in self.img_dir.glob("*.png"):
             if self.debug:
                 logging.debug(f"Processing image: {img_file}")
             self.data.extend(self.extract_grid_data(img_file))
 
     def extract_grid_data(self, image_path: Path) -> List[Tuple[str, str, str]]:
-        """Extract grid data from a single image file, using vertical strips per column as described by the user."""
+        """Extract grid data from a single image file, inferring headers and prices by position."""
         try:
             img = Image.open(image_path)
         except (OSError, FileNotFoundError) as err:
             logging.error("Error opening image %s: %s", image_path, err)
             return []
-        # Preprocess image: convert to grayscale and apply threshold
-        img_gray = img.convert('L')
-        threshold = 180
-        img_bin = img_gray.point(lambda x: 255 if x > threshold else 0, mode='1')
-        # Save preprocessed image with underscore prefix
-        preprocessed_path = image_path.parent / ("_" + image_path.name)
-        img_bin.save(preprocessed_path)
+        ocr_text = pytesseract.image_to_string(img)
         if self.debug:
-            logging.debug(f"Applied grayscale and thresholding to image {image_path}, saved as {preprocessed_path}")
-        ocr_text = pytesseract.image_to_string(img_bin)
-        if self.debug:
-            logging.debug(f"OCR text for {image_path}:\n{ocr_text}")
+            logging.debug(f"OCR text for {image_path}: {ocr_text}")
+        # Remove empty lines and group lines into logical rows
         lines = [line.strip() for line in ocr_text.splitlines() if line.strip()]
-        if self.debug:
-            logging.debug(f"Parsed non-empty lines ({len(lines)}): {lines}")
+        # Heuristic: group lines into blocks of 8 (day, date, 7 prices)
         prices: List[Tuple[str, str, str]] = []
-        all_columns = []
-        col = 1
         i = 0
-        while i + 9 <= len(lines):
-            # Stop for debugging if col == 8
-            if col == 8:
-                logging.debug(f"Debugging column {col}: day={day_of_week}, date={date_header}, prices={price_cells}")
-            day_of_week = lines[i]
-            date_header = lines[i+1]
+        while i + 8 <= len(lines):
+            day = lines[i]
+            date = lines[i+1]
             price_cells = lines[i+2:i+9]
             if self.debug:
-                logging.debug(f"Column {col}: day={day_of_week}, date={date_header}, prices={price_cells}")
-            all_columns.append((date_header, price_cells))
-            col += 1
-            i += 9
-
-        # Use column 8 as the 'To Date' for each row, and extract row headers (dates) from column 8
-        if len(all_columns) >= 8:
-            to_dates_raw = all_columns[7][1]  # 8th column's price_cells
-            # Only use lines that are not day names as row headers
-            day_names = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
-            row_headers = [val for val in to_dates_raw if val not in day_names]
-            # Fallback: if not enough headers, just use the raw values
-            if len(row_headers) < 7:
-                row_headers = to_dates_raw
-            for col_idx, (date_header, price_cells) in enumerate(all_columns[:7]):
-                for row, price in enumerate(price_cells, start=1):
-                    to_date = row_headers[row-1] if row-1 < len(row_headers) else ''
-                    prices.append((date_header, to_date, price))
-        else:
-            # Fallback: just output as before if not enough columns
-            for col_idx, (date_header, price_cells) in enumerate(all_columns):
-                for row, price in enumerate(price_cells, start=1):
-                    prices.append((date_header, '', price))
+                logging.debug(f"Row: day={day}, date={date}, prices={price_cells}")
+            for col, price in enumerate(price_cells):
+                prices.append((date, f"col{col+1}", price))
+            i += 8
         return prices
 
     def write_csv(self, output_csv: str) -> None:
