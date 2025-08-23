@@ -2,21 +2,24 @@
 test_ocr_utils.py
 
 Script to test OCR preprocessing and extraction with different Tesseract configurations.
-"""
 
-from pathlib import Path
-from ocr_utils import preprocess_image, run_ocr
-from ocr_cleaning import clean_lines
-from cache_utils import get_cache_file, load_from_cache, save_to_cache
-import sys
+"""
+import pandas as pd
+import concurrent.futures
 import os
-import re
-import pickle    
-from datetime import datetime
 try:
+    from rich.console import Console
+    from rich.table import Table
     from rich import print as rprint
 except ImportError:
+    Console = None
+    Table = None
     rprint = print
+from rich.console import Console
+from rich.table import Table
+from ocr_utils import preprocess_image, run_ocr
+from ocr_cleaning import clean_lines
+
 
 def process_image(threshold=None, skip=None, take=None):
     import argparse
@@ -31,7 +34,7 @@ def process_image(threshold=None, skip=None, take=None):
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
     args = parser.parse_args()
 
- 
+    import re
     threshold_val = threshold if threshold is not None else args.threshold
     image_path = Path(args.image)
     img_bin = preprocess_image(image_path, debug=args.debug, threshold=threshold_val)
@@ -62,7 +65,6 @@ def process_image(threshold=None, skip=None, take=None):
     else:
         lines_to_check = numbered_lines[skip_val:skip_val+take_val]
     filtered = [(num, line) for num, line in lines_to_check if not price_pattern.match(line.strip())]
-    import pandas as pd
     if all(line[1].strip()[:3].isalpha() for line in filtered):
         count = 0
         df = pd.DataFrame()
@@ -81,71 +83,43 @@ def process_image(threshold=None, skip=None, take=None):
     return count, df
 
 # Top-level process_wrapper for multiprocessing
-def process_wrapper(args, refresh_cache=False):
-
+def process_wrapper(args):
+    import sys
     image_path, threshold, skip, take = args
-    cache_file = get_cache_file(image_path, threshold)
-    
-    used_cache = False
-
+    from datetime import datetime
+    try:
+        from rich import print as rprint
+    except ImportError:
+        rprint = print
     now = datetime.now().strftime('%H:%M:%S')
-    # rprint(f"[bold blue][{now}][Worker {os.getpid()}][/bold blue] refresh_cache=[cyan]{refresh_cache}[/cyan] cache_file=[magenta]{cache_file}[/magenta] exists=[yellow]{os.path.exists(cache_file)}[/yellow]")
-    if not refresh_cache and os.path.exists(cache_file):
-        rprint(f"[bold green][{now}][Worker {os.getpid()}] loading from cache: [magenta]{cache_file}[/magenta][/bold green]")
-        count, df = get_cache_file(cache_file)
-        used_cache = True
-        # Clean the 'line' values as specified, then recount
-        import re
-        if df is not None and not df.empty and 'line' in df.columns:
-            
-            lines, price_pattern = clean_lines(df['line'].astype(str).tolist())
-            
-            # Filter out lines matching price_pattern
-            filtered = [(num, line) for num, line in zip(df['line_number'], lines) if not price_pattern.match(line.strip())]
-            df = df[df['line_number'].isin([num for num, _ in filtered])].reset_index(drop=True)
-            lines = df['line'].astype(str).tolist()
-            # Recount as in process_image
-            filtered2 = [(num, line) for num, line in zip(df['line_number'], lines) if not line.strip()[:3].isalpha()]
-            count = len(filtered2)
-            if filtered2:
-                df = df[df['line_number'].isin([num for num, _ in filtered2])].reset_index(drop=True)
-            else:
-                df = df.iloc[0:0]  # empty DataFrame with same columns
-        return count, df, used_cache
-    else:
-        rprint(f"[bold yellow][{now}][Worker {os.getpid()}] recomputing and writing to cache: [magenta]{cache_file}[/magenta][/bold yellow]")
+
+
     sys.argv = [sys.argv[0], str(image_path), '--threshold', str(threshold), '--skip', str(skip), '--take', str(take)]
+    rprint(f"[bold yellow][{now} [Worker][/bold yellow] Processing: [magenta]{image_path}[/magenta], Threshold: [yellow]{threshold}[/yellow]")
     from test_ocr_utils import process_image
     count, df = process_image(threshold=threshold, skip=skip, take=take)
-    save_to_cache(cache_file, (count, df))
-    return count, df, used_cache
 
-def batch_process(refresh_cache=False, max_workers=2):
+    rprint(f"[bold yellow][{now}] [Worker][/bold yellow] Finished processing: [magenta]{image_path}[/magenta], Threshold: [yellow]{threshold}[/yellow]")
+    return count, df
+
+def batch_process(max_workers=2, threshold_from=170, threshold_to=171, skip=0, take=9):
     from pathlib import Path
     from datetime import datetime
     try:
         from rich import print as rprint
     except ImportError:
         rprint = print
-    import concurrent.futures
-    import os
-    # print(f"[Parent] {os.getpid()} refresh_cache={refresh_cache}", flush=True)
     now = datetime.now().strftime('%H:%M:%S')
-    rprint(f"[bold magenta][{now}][Parent {os.getpid()}] refresh_cache={refresh_cache} max_workers={max_workers}[/bold magenta]")
     images_dir = Path("images")
     images = sorted([f for f in images_dir.glob("*.png") if not f.name.startswith("_")])
-    threshold_from = 160
-    threshold_to = 190
-    skip = 0
-    take = 9
     tasks = [(image_path, threshold, skip, take)
-            for threshold in range(threshold_from, threshold_to + 1)
-            for image_path in images]
+             for threshold in range(threshold_from, threshold_to + 1)
+             for image_path in images]
     total_count = 0
     all_results = []
 
     from functools import partial
-    process_wrapper_with_flag = partial(process_wrapper, refresh_cache=refresh_cache)
+    process_wrapper_with_flag = partial(process_wrapper)
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         futures = {}
         for idx, task in enumerate(tasks, 1):
@@ -156,32 +130,33 @@ def batch_process(refresh_cache=False, max_workers=2):
         for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
             image_path, threshold, _, _ = futures[future]
             try:
-                count, df, used_cache = future.result()
+                count, df= future.result()
                 now = datetime.now().strftime('%H:%M:%S')
-                if used_cache:
-                    rprint(f"[bold green][{now}] Used cache [bold][magenta]{image_path.name}[/magenta][/bold] (threshold=[yellow]{threshold}[/yellow]) [[green]{i}[/green]/[blue]{len(tasks)}[/blue]][/bold green]")
-                else:
-                    rprint(f"[bold yellow][{now}] Processed [bold][magenta]{image_path.name}[/magenta][/bold] (threshold=[yellow]{threshold}[/yellow]) [[green]{i}[/green]/[blue]{len(tasks)}[/blue]][/bold yellow]")
+                rprint(f"[bold yellow][{now}][/bold yellow] Processed [bold][magenta]{image_path.name}[/magenta][/bold] (threshold=[yellow]{threshold}[/yellow]) [[green]{i}[/green]/[blue]{len(tasks)}[/blue]]")
                 total_count += count
-                if df is not None and not df.empty:
-                    all_results.append(df)
-            except Exception as e:
-                rprint(f"\nError processing [bold red]{image_path}[/bold red] (threshold={threshold}): {e}")
-        
-        
-    # Create a pivot table: count of lines per image and threshold
+                all_results.append(df)
+            except Exception as e:  
+                now = datetime.now().strftime('%H:%M:%S')
+                rprint(f"[bold red][{now}] Error processing [bold][magenta]{image_path.name}[/magenta][/bold] (threshold=[yellow]{threshold}[/yellow]): {e}[/bold red]")
+
     if all_results:
-        import pandas as pd
-        print(f"\n[bold green]Total lines printed (threshold={threshold_from}-{threshold_to}, skip={skip}, take={take}): {total_count}[/bold green]")
-        if total_count == 0:
-            rprint("[bold yellow]No lines printed.[/bold yellow]")
-            return
-        
         results_df = pd.concat(all_results, ignore_index=True)
 
-        print("Results DataFrame:")
-        print(results_df)
+        # print all results
+        rprint("\nAll results:")
+        if Console and Table:
+            console = Console()
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("image", style="bold")
+            table.add_column("threshold", style="cyan")
+            table.add_column("line", style="green")
+            for idx, row in results_df.iterrows():
+                table.add_row(str(row['image']), str(row['threshold']), str(row['line']))
+            console.print(table)
+        else:
+            rprint(results_df)
 
+        # Create a pivot table: count of lines per image and threshold
         pivot = results_df.pivot_table(
             index='image',
             columns='threshold',
@@ -191,10 +166,9 @@ def batch_process(refresh_cache=False, max_workers=2):
             margins=True,
             margins_name='Total'
         )
+
         rprint("\nPivot table (count of lines per image/threshold, with totals):")
-        try:
-            from rich.console import Console
-            from rich.table import Table
+        if Console and Table:
             console = Console()
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("image", style="bold")
@@ -217,9 +191,9 @@ def batch_process(refresh_cache=False, max_workers=2):
                     end_section=True
                 )
             console.print(table)
-        except ImportError:
+        else:
             rprint(pivot)
-            
+
         # Create a pivot table: count of lines per threshold (totals only)
         pivot2 = results_df.pivot_table(
             index='threshold',
@@ -230,7 +204,7 @@ def batch_process(refresh_cache=False, max_workers=2):
             margins_name='Total'
         )
         rprint("\nPivot table (count of lines per threshold, with totals):")
-        try:
+        if Console and Table:
             console = Console()
             table2 = Table(show_header=True, header_style="bold magenta")
             table2.add_column("threshold", style="bold")
@@ -246,16 +220,13 @@ def batch_process(refresh_cache=False, max_workers=2):
                     end_section=True
                 )
             console.print(table2)
-        except ImportError:
+        else:
             rprint(pivot2)
 
-
-        
-        
         # Sort the last pivot table (pivot2) by count ascending
         pivot2_sorted = pivot2.sort_values(by='line', ascending=True)
         rprint("\nPivot table (sorted by count ascending):")
-        try:
+        if Console and Table:
             table2_sorted = Table(show_header=True, header_style="bold magenta")
             table2_sorted.add_column("threshold", style="bold")
             table2_sorted.add_column("count", style="cyan")
@@ -270,9 +241,9 @@ def batch_process(refresh_cache=False, max_workers=2):
                     end_section=True
                 )
             console.print(table2_sorted)
-        except ImportError:
+        else:
             rprint(pivot2_sorted)
-        
+
         # Find the minimum count (excluding 'Total') in the sorted pivot table
         min_count = pivot2_sorted.loc[pivot2_sorted.index != 'Total', 'line'].min()
         # Get all thresholds with this minimum count
@@ -288,25 +259,10 @@ def batch_process(refresh_cache=False, max_workers=2):
                     rprint(f"[bold cyan]{df['image'].iloc[0]}[/bold cyan]")
                     for line in lines:
                         rprint(f"[bold yellow]{df[df['line'] == line]['line_number'].iloc[0]}:[/bold yellow] {line}")
-        
-    #     # Plot bar chart for the last pivot table (pivot2)
-    #     fig, ax = plt.subplots(figsize=(8, 4))
-    #     pivot2_no_total = pivot2_sorted.drop('Total', errors='ignore')
-    #     pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
-    #     ax.set_title('Count of Lines per Threshold')
-    #     ax.set_xlabel('Threshold')
-    #     ax.set_ylabel('Count')
-    # plt.tight_layout()
-    # plt.show(block=True)
-    # import time
-    # time.sleep(1)  # Give the plot window time to appear before script exits
-            
-        
     rprint(f"\nTotal lines printed (threshold={tasks[0][1]}-{tasks[-1][1]}, skip={skip}, take={take}): {total_count}")
-    
-    import matplotlib.pyplot as plt
 
-    # Plot bar chart for the last pivot table (pivot2)
+    # Only plot if there are results (pivot2 is defined)
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(8, 4))
     pivot2_no_total = pivot2.drop('Total', errors='ignore')
     pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
@@ -318,12 +274,11 @@ def batch_process(refresh_cache=False, max_workers=2):
 
 if __name__ == "__main__":
     import argparse
-    from rich.console import Console
-    from rich.table import Table
     parser = argparse.ArgumentParser()
-    parser.add_argument('--no-refresh-cache', action='store_false', dest='refresh_cache', help='Use cache if available (default: recompute and overwrite)')
-    parser.add_argument('--max-workers', type=int, default=4, help='Maximum number of worker processes (default: 2)')
-    parser.set_defaults(refresh_cache=False)
-    parser.set_defaults(max_workers=4)
+    parser.add_argument('--max-workers', type=int, default=3, help='Maximum number of worker processes (default: 3)')
+    parser.add_argument('--threshold-from', type=int, default=170, help='Minimum threshold (default: 170)')
+    parser.add_argument('--threshold-to', type=int, default=172, help='Maximum threshold (default: 172)')
+    parser.add_argument('--skip', type=int, default=0, help='Number of images to skip (default: 0)')
+    parser.add_argument('--take', type=int, default=9, help='Number of images to process (default: 9)')
     args = parser.parse_args()
-    batch_process(refresh_cache=args.refresh_cache, max_workers=args.max_workers)
+    batch_process(max_workers=args.max_workers, threshold_from=args.threshold_from, threshold_to=args.threshold_to, skip=args.skip, take=args.take)
