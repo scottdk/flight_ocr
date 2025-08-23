@@ -186,15 +186,94 @@ def batch_process(refresh_cache=False, max_workers=2):
             console.print(table)
         except ImportError:
             rprint(pivot)
+            
+        # Create a pivot table: count of lines per threshold (totals only)
+        pivot2 = results_df.pivot_table(
+            index='threshold',
+            values='line',
+            aggfunc='count',
+            fill_value=0,
+            margins=True,
+            margins_name='Total'
+        )
+        rprint("\nPivot table (count of lines per threshold, with totals):")
+        try:
+            console = Console()
+            table2 = Table(show_header=True, header_style="bold magenta")
+            table2.add_column("threshold", style="bold")
+            table2.add_column("count", style="cyan")
+            for idx, row in pivot2.iterrows():
+                if str(idx) != 'Total':
+                    table2.add_row(str(idx), str(row['line']))
+            if 'Total' in pivot2.index:
+                total_row = pivot2.loc['Total']
+                table2.add_row(
+                    '[b yellow]Total[/b yellow]',
+                    f'[b yellow]{total_row["line"]}[/b yellow]',
+                    end_section=True
+                )
+            console.print(table2)
+        except ImportError:
+            rprint(pivot2)
+
+        import matplotlib.pyplot as plt
+
+        # # Plot bar chart for the last pivot table (pivot2)
+        # fig, ax = plt.subplots(figsize=(8, 4))
+        # pivot2_no_total = pivot2.drop('Total', errors='ignore')
+        # pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
+        # ax.set_title('Count of Lines per Threshold')
+        # ax.set_xlabel('Threshold')
+        # ax.set_ylabel('Count')
+        # plt.tight_layout()
+        # plt.show()
+        
+        
+        # Sort the last pivot table (pivot2) by count ascending
+        pivot2_sorted = pivot2.sort_values(by='line', ascending=True)
+        rprint("\nPivot table (sorted by count ascending):")
+        try:
+            table2_sorted = Table(show_header=True, header_style="bold magenta")
+            table2_sorted.add_column("threshold", style="bold")
+            table2_sorted.add_column("count", style="cyan")
+            for idx, row in pivot2_sorted.iterrows():
+                if str(idx) != 'Total':
+                    table2_sorted.add_row(str(idx), str(row['line']))
+            if 'Total' in pivot2_sorted.index:
+                total_row = pivot2_sorted.loc['Total']
+                table2_sorted.add_row(
+                    '[b yellow]Total[/b yellow]',
+                    f'[b yellow]{total_row["line"]}[/b yellow]',
+                    end_section=True
+                )
+            console.print(table2_sorted)
+        except ImportError:
+            rprint(pivot2_sorted)
+        
+        # Plot bar chart for the last pivot table (pivot2)
+        fig, ax = plt.subplots(figsize=(8, 4))
+        pivot2_no_total = pivot2_sorted.drop('Total', errors='ignore')
+        pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
+        ax.set_title('Count of Lines per Threshold')
+        ax.set_xlabel('Threshold')
+        ax.set_ylabel('Count')
+    plt.tight_layout()
+    plt.show(block=True)
+    import time
+    time.sleep(1)  # Give the plot window time to appear before script exits
+            
+        
     rprint(f"\nTotal lines printed (threshold={tasks[0][1]}-{tasks[-1][1]}, skip={skip}, take={take}): {total_count}")
 
 
 if __name__ == "__main__":
     import argparse
+    from rich.console import Console
+    from rich.table import Table
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-refresh-cache', action='store_false', dest='refresh_cache', help='Use cache if available (default: recompute and overwrite)')
-    parser.add_argument('--max-workers', type=int, default=2, help='Maximum number of worker processes (default: 2)')
-    parser.set_defaults(refresh_cache=True)
+    parser.add_argument('--max-workers', type=int, default=4, help='Maximum number of worker processes (default: 2)')
+    parser.set_defaults(refresh_cache=False)
     parser.set_defaults(max_workers=2)
     args = parser.parse_args()
     batch_process(refresh_cache=args.refresh_cache, max_workers=args.max_workers)
