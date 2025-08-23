@@ -6,6 +6,7 @@ Script to test OCR preprocessing and extraction with different Tesseract configu
 
 from pathlib import Path
 from ocr_utils import preprocess_image, run_ocr
+from ocr_cleaning import clean_lines
 
 def process_image(threshold=None, skip=None, take=None):
     import argparse
@@ -31,10 +32,21 @@ def process_image(threshold=None, skip=None, take=None):
     img_bin.save(preprocessed_path)
     ocr_text = run_ocr(img_bin, debug=args.debug, tess_config=args.tess_config)
     lines = ocr_text.replace('\n\n', '\n').splitlines()
+    lines, price_pattern = clean_lines(lines)
+    
+    # # Remove any characters before a dollar sign, replace dot with comma, replace multiple commas with just one comma
+    # lines = [
+    #     re.sub(r'^.*?\$', 'A$', line) if '$' in line else line
+    #     for line in lines
+    # ]
+    # lines = [line.replace('.', ',') for line in lines]
+    # lines = [re.sub(r',+', ',', line) for line in lines]
+    
+    
     numbered_lines = list(enumerate(lines, start=1))
     skip_val = skip if skip is not None else args.skip
     take_val = take if take is not None else args.take
-    price_pattern = re.compile(r'^A\$\d{1,3}(,\d{3})*$')
+    # price_pattern = re.compile(r'^A\$\d{1,3}(,\d{3})*$')
     if skip_val == 0:
         lines_to_check = numbered_lines
     else:
@@ -83,6 +95,23 @@ def process_wrapper(args, refresh_cache=False):
         with open(cache_file, 'rb') as f:
             count, df = pickle.load(f)
         used_cache = True
+        # Clean the 'line' values as specified, then recount
+        import re
+        if df is not None and not df.empty and 'line' in df.columns:
+            
+            lines, price_pattern = clean_lines(df['line'].astype(str).tolist())
+            
+            # Filter out lines matching price_pattern
+            filtered = [(num, line) for num, line in zip(df['line_number'], lines) if not price_pattern.match(line.strip())]
+            df = df[df['line_number'].isin([num for num, _ in filtered])].reset_index(drop=True)
+            lines = df['line'].astype(str).tolist()
+            # Recount as in process_image
+            filtered2 = [(num, line) for num, line in zip(df['line_number'], lines) if not line.strip()[:3].isalpha()]
+            count = len(filtered2)
+            if filtered2:
+                df = df[df['line_number'].isin([num for num, _ in filtered2])].reset_index(drop=True)
+            else:
+                df = df.iloc[0:0]  # empty DataFrame with same columns
         return count, df, used_cache
     else:
         rprint(f"[bold yellow][{now}][Worker {os.getpid()}] recomputing and writing to cache: [magenta]{cache_file}[/magenta][/bold yellow]")
@@ -106,9 +135,9 @@ def batch_process(refresh_cache=False, max_workers=2):
     now = datetime.now().strftime('%H:%M:%S')
     rprint(f"[bold magenta][{now}][Parent {os.getpid()}] refresh_cache={refresh_cache} max_workers={max_workers}[/bold magenta]")
     images_dir = Path("images")
-    images = sorted([f for f in images_dir.glob("*.png") if not f.name.startswith("_")])[:2]
-    threshold_from = 170
-    threshold_to = 171
+    images = sorted([f for f in images_dir.glob("*.png") if not f.name.startswith("_")])
+    threshold_from = 160
+    threshold_to = 190
     skip = 0
     take = 9
     tasks = [(image_path, threshold, skip, take)
@@ -140,15 +169,12 @@ def batch_process(refresh_cache=False, max_workers=2):
                     all_results.append(df)
             except Exception as e:
                 rprint(f"\nError processing [bold red]{image_path}[/bold red] (threshold={threshold}): {e}")
-
-    # Print DataFrame and summary after all processing
-    import pandas as pd
-    if all_results:
-        results_df = pd.concat(all_results, ignore_index=True)
-        results_df.index = results_df.index + 1
-        rprint(results_df)
+        
+        
     # Create a pivot table: count of lines per image and threshold
     if all_results:
+        import pandas as pd
+        results_df = pd.concat(all_results, ignore_index=True)
         pivot = results_df.pivot_table(
             index='image',
             columns='threshold',
@@ -216,17 +242,7 @@ def batch_process(refresh_cache=False, max_workers=2):
         except ImportError:
             rprint(pivot2)
 
-        import matplotlib.pyplot as plt
 
-        # # Plot bar chart for the last pivot table (pivot2)
-        # fig, ax = plt.subplots(figsize=(8, 4))
-        # pivot2_no_total = pivot2.drop('Total', errors='ignore')
-        # pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
-        # ax.set_title('Count of Lines per Threshold')
-        # ax.set_xlabel('Threshold')
-        # ax.set_ylabel('Count')
-        # plt.tight_layout()
-        # plt.show()
         
         
         # Sort the last pivot table (pivot2) by count ascending
@@ -250,21 +266,48 @@ def batch_process(refresh_cache=False, max_workers=2):
         except ImportError:
             rprint(pivot2_sorted)
         
-        # Plot bar chart for the last pivot table (pivot2)
-        fig, ax = plt.subplots(figsize=(8, 4))
-        pivot2_no_total = pivot2_sorted.drop('Total', errors='ignore')
-        pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
-        ax.set_title('Count of Lines per Threshold')
-        ax.set_xlabel('Threshold')
-        ax.set_ylabel('Count')
-    plt.tight_layout()
-    plt.show(block=True)
-    import time
-    time.sleep(1)  # Give the plot window time to appear before script exits
+        # Find the minimum count (excluding 'Total') in the sorted pivot table
+        min_count = pivot2_sorted.loc[pivot2_sorted.index != 'Total', 'line'].min()
+        # Get all thresholds with this minimum count
+        lowest_thresholds = pivot2_sorted.loc[(pivot2_sorted['line'] == min_count) & (pivot2_sorted.index != 'Total')].index.tolist()
+        rprint(f"\n[bold green]Threshold(s) with the lowest count ({min_count}): {lowest_thresholds}[/bold green]")
+
+        # Print the lines for those thresholds
+        for threshold in lowest_thresholds:
+            rprint(f"\n[bold magenta]Lines for threshold {threshold}:[/bold magenta]")
+            for df in all_results:
+                lines = df[df['threshold'] == threshold]['line'].tolist()
+                if lines:
+                    rprint(f"[bold cyan]{df['image'].iloc[0]}[/bold cyan]")
+                    for line in lines:
+                        rprint(f"[bold yellow]{df[df['line'] == line]['line_number'].iloc[0]}:[/bold yellow] {line}")
+        
+    #     # Plot bar chart for the last pivot table (pivot2)
+    #     fig, ax = plt.subplots(figsize=(8, 4))
+    #     pivot2_no_total = pivot2_sorted.drop('Total', errors='ignore')
+    #     pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
+    #     ax.set_title('Count of Lines per Threshold')
+    #     ax.set_xlabel('Threshold')
+    #     ax.set_ylabel('Count')
+    # plt.tight_layout()
+    # plt.show(block=True)
+    # import time
+    # time.sleep(1)  # Give the plot window time to appear before script exits
             
         
     rprint(f"\nTotal lines printed (threshold={tasks[0][1]}-{tasks[-1][1]}, skip={skip}, take={take}): {total_count}")
+    
+    import matplotlib.pyplot as plt
 
+    # Plot bar chart for the last pivot table (pivot2)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    pivot2_no_total = pivot2.drop('Total', errors='ignore')
+    pivot2_no_total['line'].plot(kind='bar', ax=ax, color='skyblue')
+    ax.set_title('Count of Lines per Threshold')
+    ax.set_xlabel('Threshold')
+    ax.set_ylabel('Count')
+    plt.tight_layout()
+    plt.show()
 
 if __name__ == "__main__":
     import argparse
@@ -274,6 +317,6 @@ if __name__ == "__main__":
     parser.add_argument('--no-refresh-cache', action='store_false', dest='refresh_cache', help='Use cache if available (default: recompute and overwrite)')
     parser.add_argument('--max-workers', type=int, default=4, help='Maximum number of worker processes (default: 2)')
     parser.set_defaults(refresh_cache=False)
-    parser.set_defaults(max_workers=2)
+    parser.set_defaults(max_workers=4)
     args = parser.parse_args()
     batch_process(refresh_cache=args.refresh_cache, max_workers=args.max_workers)
