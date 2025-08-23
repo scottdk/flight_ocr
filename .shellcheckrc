@@ -1,0 +1,5 @@
+# This file is used to configure shellcheck behavior for the project.
+ignore-acronyms=true
+ignore-numbers=true
+ignore-file-names=true
+external-sources=true
