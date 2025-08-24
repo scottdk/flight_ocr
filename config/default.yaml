@@ -1,0 +1,18 @@
+# Default configuration for flight OCR processing
+ocr:
+  threshold: 173
+  tesseract_config: "-c tessedit_char_whitelist=A$0123456789,.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ :/-–—\\' --psm 6 --oem 3"
+  
+processing:
+  grid_rows: 7
+  grid_cols: 7
+  skip_underscore_files: true
+  
+paths:
+  input_dir: 'data/input/raw'
+  output_dir: 'data/output'
+  cache_dir: 'data/cache'
+  
+logging:
+  level: 'INFO'
+  format: '%(levelname)s: %(message)s'

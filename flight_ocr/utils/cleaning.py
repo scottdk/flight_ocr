@@ -1,17 +1,32 @@
+"""
+Text cleaning utilities for OCR output processing.
+"""
+
 import re
+
 
 def clean_lines(lines):
     """
     Clean OCR output lines for price extraction and analysis.
-    - Remove any characters before a dollar sign, replace dot with comma, replace multiple commas with just one comma.
+    
+    - Remove any characters before a dollar sign, replace dot with comma, 
+      replace multiple commas with just one comma.
     - Replace commonly mistaken letters with numbers after the dollar sign.
-    - Returns (cleaned_lines, price_pattern)
+    
+    Args:
+        lines (list): List of raw OCR text lines
+        
+    Returns:
+        tuple: (cleaned_lines, price_pattern)
+            - cleaned_lines: List of cleaned text lines
+            - price_pattern: Compiled regex pattern for price matching
     """
     
     # Adjust price_pattern to match "$1", "$999", "$1,000", "$999,999"
     price_pattern = re.compile(r'^\$\d{1,3}(?:,\d{3})*$')
-    # price_pattern = re.compile(r'^\$\d{1,3}(,\d{3})*$')
+    
     def fix_letters_after_dollar(line):
+        """Fix common OCR letter-to-number mistakes after dollar signs."""
         if '$' in line:
             parts = line.split('$', 1)
             prefix = parts[0] + '$'

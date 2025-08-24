@@ -1,0 +1,16 @@
+# Production configuration - optimized for performance
+# Overrides for production environment
+
+logging:
+  level: 'WARNING'
+  
+processing:
+  # Disable debug image saving in production
+  save_debug_images: false
+  # Use multiprocessing in production
+  enable_multiprocessing: true
+  max_workers: 4
+
+ocr:
+  # Optimized threshold for production
+  threshold: 173

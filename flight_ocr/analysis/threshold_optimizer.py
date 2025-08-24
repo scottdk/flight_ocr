@@ -1,8 +1,8 @@
 """
-Test OCR Utils Module
+Threshold Optimization Module for Flight OCR
 
-This module provides functionality to test OCR preprocessing and extraction 
-with different Tesseract configurations. It includes batch processing capabilities
+This module provides functionality to optimize OCR preprocessing thresholds
+for better text extraction results. It includes batch processing capabilities
 with multiprocessing support and visualization of results.
 
 Key Features:
@@ -10,12 +10,12 @@ Key Features:
 - OCR text extraction and cleaning
 - Batch processing with caching support
 - Result visualization with tables and charts
-- Multiprocessing for efficient batch operations
+- Multiprocessing for efficient threshold testing
 
 Dependencies:
 - Required: pathlib, argparse, os, sys, datetime, functools
 - Optional: pandas, matplotlib, rich (for enhanced display)
-- Custom modules: cache_utils, ocr_cleaning, ocr_utils
+- Core modules: flight_ocr.utils, flight_ocr.core
 """
 import argparse
 import concurrent.futures
@@ -40,9 +40,10 @@ except ImportError as e:
     Console = None
     Table = None
 
-from cache_utils import get_cache_file, load_from_cache, save_to_cache
-from ocr_cleaning import clean_lines
-from ocr_utils import preprocess_image, run_ocr
+# Import from the new package structure
+from flight_ocr.utils.cache import get_cache_file, load_from_cache, save_to_cache
+from flight_ocr.utils.cleaning import clean_lines
+from flight_ocr.core.image_processor import preprocess_image, run_ocr
 
 def process_image(threshold=None, skip=None, take=None):
     """
@@ -421,3 +422,35 @@ if __name__ == "__main__":
     main_parser.set_defaults(max_workers=4)
     main_args = main_parser.parse_args()
     batch_process(refresh_cache=main_args.refresh_cache, max_workers=main_args.max_workers)
+
+
+class ThresholdOptimizer:
+    """
+    Wrapper class for threshold optimization functionality.
+    
+    This class provides a clean interface to the threshold optimization
+    functions for use in other parts of the application.
+    """
+    
+    @staticmethod
+    def optimize_thresholds(refresh_cache=True, max_workers=4):
+        """
+        Run threshold optimization analysis.
+        
+        Args:
+            refresh_cache: Whether to refresh the cache or use existing results
+            max_workers: Maximum number of worker processes for parallel processing
+        """
+        return batch_process(refresh_cache=refresh_cache, max_workers=max_workers)
+    
+    @staticmethod
+    def process_single_image(threshold=None, skip=None, take=None):
+        """
+        Process a single image with specified parameters.
+        
+        Args:
+            threshold: OCR threshold value
+            skip: Number of images to skip
+            take: Number of images to process
+        """
+        return process_image(threshold=threshold, skip=skip, take=take)

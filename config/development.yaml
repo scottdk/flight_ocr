@@ -1,0 +1,13 @@
+# Development configuration - inherits from default
+# Overrides for development environment
+
+logging:
+  level: 'DEBUG'
+
+ocr:
+  # Lower threshold for better debugging visibility
+  threshold: 160
+
+processing:
+  # Save debug images in development
+  save_debug_images: true
