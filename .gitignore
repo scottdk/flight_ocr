@@ -75,6 +75,18 @@ coverage.xml
 # System files
 Thumbs.db
 
-images/*
+# Old cache directories (replaced with data/cache/)
+# images/*
 results/*
 data/input/raw/*
+
+# Generated cache and output files
+data/cache/
+data/output/processed_images/
+data/output/reports/
+data/output/csv/
+
+# Test artifacts and integration files
+test_cache_integration.py
+test_ocr_utils.py
+test_ocr_utils_bu.py
