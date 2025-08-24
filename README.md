@@ -4,13 +4,16 @@ A Python project for OCR (Optical Character Recognition) preprocessing and text 
 
 ## Features
 
-- 🖼️ **Image Preprocessing**: Configurable thresholds for image binarization
-- 🔍 **OCR Text Extraction**: Uses Tesseract with customizable configurations
-- 🧹 **Text Cleaning**: Automated cleaning of OCR output
-- ⚡ **Batch Processing**: Multiprocessing support for efficient bulk operations
-- 💾 **Caching**: Smart caching to avoid reprocessing
-- 📊 **Visualization**: Rich tables and charts for result analysis
-- 📁 **CSV Export**: Export results to CSV format
+- 🖼️ **Advanced Image Preprocessing**: Configurable threshold optimization for optimal OCR results
+- 🔍 **Robust OCR Text Extraction**: Tesseract integration with smart preprocessing pipelines
+- 🧹 **Intelligent Text Cleaning**: Automated OCR output cleaning and validation
+- ⚡ **High-Performance Batch Processing**: Multiprocessing support for efficient bulk operations
+- 🎯 **Threshold Optimization Analysis**: Automated analysis to find optimal preprocessing parameters
+- 💾 **Smart Caching System**: Intelligent caching to avoid reprocessing with configurable refresh
+- 📊 **Rich Visualization & Reporting**: Detailed analysis reports with charts and tables
+- 📁 **Flexible Export Options**: CSV export with customizable output directories
+- 🖥️ **Dual-Mode CLI**: Modern subcommand interface with full backward compatibility
+- 🧪 **Mock Testing Mode**: Test workflows without requiring Tesseract installation
 
 ## Requirements
 
@@ -116,59 +119,99 @@ tesseract --version
 
 ```
 flight_ocr/
-├── flight_ocr/                # Main package
+├── flight_ocr/                    # Main package
 │   ├── __init__.py
-│   ├── core/                  # Core business logic
+│   ├── core/                      # Core business logic
 │   │   ├── __init__.py
-│   │   ├── ocr_engine.py     # Main OCR processing
-│   │   ├── image_processor.py # Image preprocessing
-│   │   └── data_extractor.py # Data extraction utilities
-│   ├── utils/                 # Utility modules
+│   │   ├── ocr_engine.py         # Main OCR processing engine
+│   │   ├── image_processor.py    # Image preprocessing utilities
+│   │   └── data_extractor.py     # Data extraction and logging
+│   ├── utils/                     # Utility modules
 │   │   ├── __init__.py
-│   │   ├── cache.py          # Caching functionality
-│   │   ├── cleaning.py       # Text cleaning utilities
-│   │   └── file_io.py        # File I/O operations
-│   └── cli/                   # Command-line interface
+│   │   ├── cache.py              # Smart caching system
+│   │   ├── cleaning.py           # OCR text cleaning utilities
+│   │   ├── file_io.py            # File I/O operations
+│   │   └── mock_ocr.py           # Mock OCR for testing
+│   ├── analysis/                  # Analysis tools
+│   │   ├── __init__.py
+│   │   └── threshold_optimizer.py # OCR threshold optimization
+│   └── cli/                       # Command-line interface
 │       ├── __init__.py
-│       └── main.py           # CLI entry point
-├── tests/                     # Test suite
-│   ├── conftest.py           # pytest configuration
-│   ├── test_core/            # Core functionality tests
-│   └── test_utils/           # Utility function tests
-├── data/                      # Data directories
-│   ├── input/raw/            # Input images
-│   ├── cache/                # Cache files
-│   └── output/               # Output files
-│       ├── csv/              # CSV results
-│       ├── processed_images/ # Debug images
-│       └── reports/          # Analysis reports
-├── config/                    # Configuration files
-├── scripts/                   # Setup and utility scripts
-├── docs/                      # Documentation
-├── pyproject.toml            # Modern Python project config
-├── requirements.txt          # Production dependencies
-├── requirements-dev.txt      # Development dependencies
-└── README.md
+│       ├── main.py               # Main CLI with dual-mode support
+│       └── threshold.py          # Threshold optimization CLI
+├── data/                          # Data directories (created during setup)
+│   ├── input/raw/                # Input images
+│   ├── cache/                    # Cache files
+│   └── output/                   # Output files
+│       ├── csv/                  # CSV results
+│       ├── processed_images/     # Debug images
+│       └── reports/              # Threshold analysis reports
+├── config/                        # Configuration files
+│   ├── default.yaml              # Default configuration
+│   ├── development.yaml          # Development settings
+│   └── production.yaml           # Production settings
+├── scripts/                       # Setup and utility scripts
+│   ├── setup-env.sh/.ps1         # Environment setup
+│   └── setup-fresh.sh/.ps1       # Fresh environment creation
+├── docs/                          # Documentation
+│   ├── README.md                 # Detailed documentation
+│   ├── QUICKSTART.md             # Quick start guide
+│   └── TESSERACT_INSTALL.md      # Tesseract installation guide
+├── images/                        # Sample images for testing
+├── pyproject.toml                # Modern Python project configuration
+├── requirements.txt              # Production dependencies
+├── requirements-dev.txt          # Development dependencies
+└── README.md                     # This file
 ```
 
 ## Usage
 
-### Basic OCR Processing
+### Modern CLI with Subcommands (Recommended)
 
 ```bash
-# Using the CLI
-flight-ocr --img-dir data/input/raw --output-csv flight_prices.csv
+# OCR Processing
+python -m flight_ocr.cli.main process --img-dir data/input/raw --output-csv results.csv
+python -m flight_ocr.cli.main process --mock --debug  # Test with mock data
 
-# Or using Python module directly
-python -m flight_ocr.cli.main --debug --img-dir data/input/raw
+# Threshold Optimization Analysis
+python -m flight_ocr.cli.main optimize-thresholds --max-workers 8
+python -m flight_ocr.cli.main optimize-thresholds --no-refresh-cache
+
+# Get help for any command
+python -m flight_ocr.cli.main --help
+python -m flight_ocr.cli.main process --help
+python -m flight_ocr.cli.main optimize-thresholds --help
 ```
 
-### Batch Processing
+### Legacy CLI (Backward Compatible)
 
 ```bash
-# Process with batch testing (legacy)
-python -m tests.test_core.test_ocr_engine_full --max-workers 4 --no-refresh-cache
+# Old syntax still works for existing scripts
+python -m flight_ocr.cli.main --debug --img-dir data/input/raw --output-csv results.csv
+python -m flight_ocr.cli.main --mock --debug
 ```
+
+### Advanced: Threshold Optimization Analysis
+
+The Flight OCR project includes a sophisticated threshold optimization tool that automatically finds the best OCR preprocessing parameters:
+
+```bash
+# Run threshold optimization with default settings
+python -m flight_ocr.cli.main optimize-thresholds
+
+# Use more workers for faster processing
+python -m flight_ocr.cli.main optimize-thresholds --max-workers 8
+
+# Skip cache refresh to use existing analysis
+python -m flight_ocr.cli.main optimize-thresholds --no-refresh-cache
+```
+
+This analysis:
+- 🔍 Tests multiple threshold combinations on your image set
+- 📊 Generates detailed reports showing OCR quality metrics
+- 🎯 Identifies optimal parameters for your specific image types
+- 💾 Caches results for efficient re-analysis
+- ⚡ Uses multiprocessing for fast batch analysis
 
 ### Custom Image Processing
 
