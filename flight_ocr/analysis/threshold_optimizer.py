@@ -212,18 +212,27 @@ def batch_process(refresh_cache=False, max_workers=2):
         max_workers: Maximum number of worker processes
     """
     now = datetime.now().strftime('%H:%M:%S')
-    images_dir = Path("images")
+    images_dir = Path("data/input/raw")
     images = sorted([f for f in images_dir.glob("*.png") if not f.name.startswith("_")])
     threshold_from = 171
     threshold_to = 173
     skip = 0
     take = 9
+    
+    # Check if images were found
+    if not images:
+        rprint(f"[yellow]⚠️  No PNG images found in {images_dir} directory (excluding files starting with '_')[/yellow]")
+        rprint("[cyan]💡 Expected to find images like: flight-*.png, image-*.png, etc.[/cyan]")
+        return
+        
     tasks = [(image_path, threshold, skip, take)
             for threshold in range(threshold_from, threshold_to + 1)
             for image_path in images]
     total_count = 0
     all_results = []
     all_thresholds = []
+
+    rprint(f"[green]📁 Found {len(images)} images to process with thresholds {threshold_from}-{threshold_to}[/green]")
 
     process_wrapper_with_flag = partial(process_wrapper, refresh_cache=refresh_cache)
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -309,7 +318,12 @@ def batch_process(refresh_cache=False, max_workers=2):
         # Print the lines for those thresholds
         _display_lines_for_thresholds(lowest_thresholds, all_results)
         
-    rprint(f"\nTotal lines printed (threshold={tasks[0][1]}-{tasks[-1][1]}, skip={skip}, take={take}): {total_count}")
+    # Display summary with safe task access
+    if tasks:
+        threshold_range = f"threshold={tasks[0][1]}-{tasks[-1][1]}"
+    else:
+        threshold_range = f"threshold={threshold_from}-{threshold_to}"
+    rprint(f"\nTotal lines printed ({threshold_range}, skip={skip}, take={take}): {total_count}")
     
     if 'pivot2' in locals():
         _display_chart(pivot2)
