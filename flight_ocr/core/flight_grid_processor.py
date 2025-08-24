@@ -1,5 +1,5 @@
 """
-Main OCR engine for flight grid processing.
+Flight grid processing module for extracting flight price data from images.
 """
 
 import logging

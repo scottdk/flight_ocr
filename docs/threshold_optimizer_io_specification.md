@@ -18,17 +18,28 @@ The Threshold Optimizer is a sophisticated analysis tool that tests multiple OCR
 |-----------|------|---------|-------------|
 | `--no-refresh-cache` | flag | False | Use existing cache instead of recomputing |
 | `--max-workers` | int | 4 | Maximum number of worker processes |
+| `--threshold-from` | int | 171 | Starting threshold value |
+| `--threshold-to` | int | 173 | Ending threshold value |
+| `--skip` | int | 0 | Number of rows to skip from OCR output |
+| `--take` | int | 9 | Number of rows to take for processing |
+| `--image-file` | str | None | Single image file to process (overrides --image-dir) |
+| `--image-dir` | str | data/input/raw | Directory containing images |
 
-### **2. Configuration Constants**
+### **2. Configurable Parameters**
 
-Located in `batch_process()` function:
+All threshold optimization parameters are now configurable via command line or programmatic interface:
 
 ```python
-images_dir = Path("data/input/raw")          # Input directory
-threshold_from = 171                         # Starting threshold value  
-threshold_to = 173                          # Ending threshold value
-skip = 0                                    # Lines to skip from OCR output
-take = 9                                    # Lines to take for processing
+# Via CLI
+python -m flight_ocr.analysis.threshold_optimizer \
+    --threshold-from 170 --threshold-to 175 \
+    --image-file "data/input/raw/flight-2025-08-23 10-24-12.png"
+
+# Via API
+ThresholdOptimizer.optimize_thresholds(
+    threshold_from=170, threshold_to=175,
+    image_file="data/input/raw/specific_image.png"
+)
 ```
 
 ### **3. Input Files**
@@ -54,7 +65,7 @@ take = 9                                    # Lines to take for processing
   ```
 
 #### **Raw Cache Files (Input - Optional)**
-- **Location**: `images/.raw_cache/` 
+- **Location**: `data/cache/raw_ocr/` 
 - **Format**: `{image_stem}_{threshold}.pkl`
 - **Structure**: Raw OCR text strings before processing
 - **Purpose**: Intermediate caching of raw OCR results
@@ -130,7 +141,7 @@ Threshold(s) with the lowest count (1155): [171, 172, 173]
 - **Purpose**: Stores processed OCR results to avoid recomputation
 
 #### **Raw Cache Files**
-- **Location**: `images/.raw_cache/`
+- **Location**: `data/cache/raw_ocr/`
 - **Format**: `{image_stem}_{threshold}.pkl`  
 - **Structure**: Raw OCR text string
 - **Purpose**: Caches unprocessed OCR output
@@ -270,7 +281,7 @@ Cache files created: 45 .pkl files
 | Setting | Value | Purpose |
 |---------|-------|---------|
 | OCR Cache Directory | `data/cache/ocr_text/` | Processed results |
-| Raw Cache Directory | `images/.raw_cache/` | Raw OCR output |
+| Raw Cache Directory | `data/cache/raw_ocr/` | Raw OCR output |
 | Cache Format | Pickle (.pkl) | Python object serialization |
 | Cache Naming | `{image}_{threshold}.pkl` | Unique per image/threshold |
 

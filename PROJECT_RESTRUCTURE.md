@@ -19,7 +19,7 @@
    - `cache_utils.py` → `flight_ocr/utils/cache.py`
    - `ocr_cleaning.py` → `flight_ocr/utils/cleaning.py`
    - `ocr_utils.py` → `flight_ocr/core/image_processor.py`
-   - `flight_ocr.py` → `flight_ocr/core/ocr_engine.py`
+   - `flight_ocr.py` → `flight_ocr/core/flight_grid_processor.py`
    - `test_ocr_utils.py` → `tests/test_core/test_ocr_engine_full.py`
    - Updated all imports to use new package structure
 
@@ -64,7 +64,7 @@ python -m flight_ocr.cli.main --debug --img-dir data/input/raw
 
 **Import in Python Code:**
 ```python
-from flight_ocr.core.ocr_engine import FlightGridOCR
+from flight_ocr.core.flight_grid_processor import FlightGridOCR
 from flight_ocr.core.data_extractor import configure_logging
 
 configure_logging(debug=True)

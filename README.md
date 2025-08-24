@@ -123,7 +123,7 @@ flight_ocr/
 │   ├── __init__.py
 │   ├── core/                      # Core business logic
 │   │   ├── __init__.py
-│   │   ├── ocr_engine.py         # Main OCR processing engine
+│   │   ├── flight_grid_processor.py  # Flight grid processing engine
 │   │   ├── image_processor.py    # Image preprocessing utilities
 │   │   └── data_extractor.py     # Data extraction and logging
 │   ├── utils/                     # Utility modules
@@ -157,7 +157,9 @@ flight_ocr/
 │   ├── README.md                 # Detailed documentation
 │   ├── QUICKSTART.md             # Quick start guide
 │   └── TESSERACT_INSTALL.md      # Tesseract installation guide
-├── images/                        # Sample images for testing
+├── data/                          # Data directory
+│   ├── input/raw/                # Input images (moved from images/)
+│   └── cache/                    # All cache files
 ├── pyproject.toml                # Modern Python project configuration
 ├── requirements.txt              # Production dependencies
 ├── requirements-dev.txt          # Development dependencies
@@ -218,7 +220,7 @@ This analysis:
 ```bash
 # Use the package programmatically
 python -c "
-from flight_ocr.core.ocr_engine import FlightGridOCR
+from flight_ocr.core.flight_grid_processor import FlightGridOCR
 from flight_ocr.core.data_extractor import configure_logging
 
 configure_logging(debug=True)  

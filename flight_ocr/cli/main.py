@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from ..core.data_extractor import configure_logging
-from ..core.ocr_engine import FlightGridOCR
+from ..core.flight_grid_processor import FlightGridOCR
 from .threshold import add_threshold_parser
 
 

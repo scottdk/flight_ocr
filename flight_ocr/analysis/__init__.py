@@ -7,6 +7,8 @@ This module contains utilities for:
 - Result visualization and reporting
 """
 
-from .threshold_optimizer import ThresholdOptimizer
+# Avoid eager imports to prevent module execution conflicts when using -m
+# The ThresholdOptimizer can be imported directly when needed:
+# from flight_ocr.analysis.threshold_optimizer import ThresholdOptimizer
 
-__all__ = ['ThresholdOptimizer']
+__all__ = []
