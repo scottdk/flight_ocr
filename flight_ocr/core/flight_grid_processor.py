@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import List, Tuple
 
-from ..core.image_processor import preprocess_image, run_ocr
+from ..core.image_processor import process_image_for_ocr
 from ..utils.cache import get_cache_file, load_from_cache, save_to_cache
 from ..utils.cleaning import clean_lines
 from ..utils.file_io import write_csv_data
@@ -78,10 +78,14 @@ class FlightGridOCR:
             return cached
 
         try:
-            img_bin = preprocess_image(image_path, debug=self.debug, threshold=threshold)
             tess_config = (r'-c tessedict_char_whitelist=A$0123456789,.abcdefghijklmnopqr'
                           r'stuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ :/-–—\' --psm 6 --oem 3')
-            ocr_text = run_ocr(img_bin, debug=self.debug, tess_config=tess_config)
+            ocr_text = process_image_for_ocr(
+                image_path=Path(image_path), 
+                threshold=threshold,
+                debug=self.debug, 
+                tess_config=tess_config
+            )
             save_to_cache(cache_file, ocr_text)
             return ocr_text
         except (OSError, FileNotFoundError) as err:

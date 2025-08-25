@@ -2,29 +2,26 @@
 Threshold Optimization Module for Flight OCR
 
 This module provides functionality to optimize OCR preprocessing thresholds
-for better text extraction results. It includes batch processing capabilities
-with multiprocessing support and visualization of results.
+for better text extraction results. It focuses purely on analysis logic
+while delegating image processing and multithreading to the image_processor module.
 
 Key Features:
-- Image preprocessing with configurable thresholds
-- OCR text extraction and cleaning
-- Batch processing with caching support
-- Result visualization with tables and charts
-- Multiprocessing for efficient threshold testing
+- Backend-agnostic threshold analysis
+- Flexible threshold specification parsing
+- Rich colored output with progress tracking
+- Clean separation from OCR implementation details
 
 Dependencies:
-- Required: pathlib, argparse, os, sys, datetime, functools
-- Optional: pandas, matplotlib, rich (for enhanced display)
-- Core modules: flight_ocr.utils, flight_ocr.core
+- Required: pathlib, argparse, os, sys, datetime
+- Optional: pandas, rich (for enhanced display)
+- Core modules: flight_ocr.core.image_processor for all OCR operations
 """
 import argparse
-import concurrent.futures
-import os
 import sys
-from datetime import datetime
-from functools import partial
+import os
+from datetime import datetime, timedelta
 from pathlib import Path
-
+    
 # Add the project root to Python path only when running directly (not with -m)
 if __name__ == "__main__" and __package__ is None:
     project_root = Path(__file__).parent.parent.parent
@@ -46,7 +43,36 @@ except ImportError as e:
 
 # Import from the new package structure
 from flight_ocr.utils.cleaning import clean_lines
-from flight_ocr.core.image_processor import process_image_for_ocr
+from flight_ocr.core.image_processor import batch_process_images_for_ocr, process_image_for_ocr
+
+def estimate_optimal_workers():
+    """
+    Estimate the optimal number of worker processes based on CPU cores.
+    
+    OCR processing is typically CPU-intensive, so we use a conservative approach:
+    - For 1-2 cores: Use 1 worker
+    - For 3-4 cores: Use 2-3 workers (leave 1 core for system)
+    - For 5-8 cores: Use 75% of cores
+    - For 9+ cores: Use 75% of cores with a reasonable maximum
+    
+    Returns:
+        int: Recommended number of workers
+    """
+    try:
+        cpu_count = os.cpu_count()
+        if cpu_count is None:
+            return 2  # Safe fallback
+        
+        if cpu_count <= 2:
+            return 1
+        elif cpu_count <= 4:
+            return min(cpu_count - 1, 3)  # Leave 1 core free, max 3
+        elif cpu_count <= 8:
+            return int(cpu_count * 0.75)  # Use 75% of cores
+        else:
+            return min(int(cpu_count * 0.75), 12)  # Cap at 12 workers for very high core counts
+    except:
+        return 2  # Safe fallback on any error
 
 def parse_threshold_values(threshold_param):
     """
@@ -133,13 +159,16 @@ def process_image(threshold=None, skip=None, take=None, no_cache=False):
     # Use the single point of access for OCR processing
     try:
         rprint(f"[cyan]🔄 Processing image:[/cyan] [bold magenta]{image_path}[/bold magenta] [yellow](threshold={threshold_val})[/yellow]")
-        ocr_text = process_image_for_ocr(
+        result_list = process_image_for_ocr(
             image_path=image_path,
             threshold=threshold_val,
             no_cache=no_cache,
             debug=parsed_args.debug,
             tess_config=parsed_args.tess_config
         )
+        # Extract cleaned lines from the first (and only) result tuple
+        _, _, cleaned_lines = result_list[0]
+        ocr_text = '\n'.join(cleaned_lines)
     except Exception as e:
         # Log OCR error with context
         rprint(f"[orange3]⚠️  OCR error processing {image_path}: {str(e)}[/orange3]")
@@ -148,8 +177,6 @@ def process_image(threshold=None, skip=None, take=None, no_cache=False):
         raise
     
     # Process the OCR text (threshold optimizer's responsibility)
-    lines = ocr_text.replace('\n\n', '\n').splitlines()
-    lines, price_pattern = clean_lines(lines)
     
     numbered_lines = list(enumerate(lines, start=1))
     skip_val = skip if skip is not None else parsed_args.skip
@@ -181,41 +208,95 @@ def process_image(threshold=None, skip=None, take=None, no_cache=False):
         })
     return count, df
 
-# Top-level process_wrapper for multiprocessing
-def process_wrapper(task_args, no_cache=False):
+
+def _analyze_ocr_text(lines, image_path, threshold, skip, take):
     """
-    Wrapper function for multiprocessing to handle image processing tasks.
+    Analyze OCR text to identify issues and create analysis DataFrame.
     
-    This function is now cache-agnostic - all caching is handled by image_processor.
+    This function processes the cleaned OCR lines and flags lines 
+    that don't match expected patterns for flight data.
     
     Args:
-        task_args: Tuple of (image_path, threshold, skip, take)
-        no_cache: Whether to skip caching (passed to image_processor)
+        lines: List of cleaned OCR text lines
+        image_path: Path to the processed image
+        threshold: Threshold value used for processing
+        skip: Number of rows to skip
+        take: Number of rows to take
         
     Returns:
-        tuple: (count, DataFrame)
+        tuple: (issue_count, DataFrame) containing issue count and complete analysis results
     """
-    image_path, threshold, skip, take = task_args
-    now = datetime.now().strftime('%H:%M:%S')
+    import re
     
-    # Process the image using the image processor (which handles all caching)
-    try:
-        rprint(f"[bold yellow][{now}][Worker {os.getpid()}] processing: [magenta]{image_path.name}[/magenta] (threshold={threshold})[/bold yellow]")
-        sys.argv = [sys.argv[0], str(image_path), '--threshold', str(threshold), '--skip', str(skip), '--take', str(take)]
-        count, df = process_image(threshold=threshold, skip=skip, take=take, no_cache=no_cache)
-        return count, df
-    except (ImportError, FileNotFoundError, ValueError) as exc:
-        rprint(f"[red]❌ Error processing {image_path}: {exc}[/red]")
+    if not lines:
+        # Empty OCR result
         return 0, None
-    except Exception as exc:
-        # Handle OCR errors generically
-        rprint(f"[orange3]⚠️  OCR error processing {image_path}: {exc}[/orange3]")
+    
+    # Clean lines (they should already be cleaned but ensure we have price pattern)
+    lines, price_pattern = clean_lines(lines)
+    
+    # Define patterns for valid flight data
+    price_pattern = re.compile(r'^\$\d{1,3}(?:,\d{3})*,?$')  # Allow trailing comma
+    day_pattern = re.compile(r'^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$', re.IGNORECASE)
+    date_pattern = re.compile(r'^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\d{1,2}$', re.IGNORECASE)
+    
+    # Number lines and apply skip/take logic
+    numbered_lines = list(enumerate(lines, start=1))
+    if skip == 0:
+        lines_to_check = numbered_lines
+    else:
+        lines_to_check = numbered_lines[skip:skip+take] if take > 0 else numbered_lines[skip:]
+        
+    # Create DataFrame with all lines and flag truly problematic lines as issues
+    all_data = []
+    issue_count = 0
+    
+    for num, line in lines_to_check:
+        line_clean = line.strip()
+        
+        # Check if line matches any valid pattern
+        is_price = price_pattern.match(line_clean)
+        is_day = day_pattern.match(line_clean)
+        is_date = date_pattern.match(line_clean)
+        is_valid = is_price or is_day or is_date
+        
+        # Flag as issue only if it doesn't match any valid pattern
+        is_issue = not is_valid
+        
+        if is_issue:
+            issue_count += 1
+        
+        all_data.append({
+            'image': str(image_path),
+            'threshold': threshold,
+            'skip': skip,
+            'take': take,
+            'line_number': num,
+            'line': line,
+            'is_issue': is_issue,
+            'is_price': bool(is_price),
+            'is_day': bool(is_day),
+            'is_date': bool(is_date)
+        })
+    
+    if not all_data:
         return 0, None
+        
+    if pd is not None:
+        df = pd.DataFrame(all_data)
+    else:
+        df = all_data
+    
+    return issue_count, df
+
 
 def batch_process(no_cache=False, max_workers=2, thresholds="171-173", 
                  skip=0, take=9, image_file=None, image_dir=None):
     """
-    Process multiple images in batch using multiprocessing.
+    Process multiple images in batch using the image processor's multithreading.
+    
+    This function is now threading-agnostic and focuses purely on analysis logic.
+    All multithreading is handled by the image_processor module.
     
     Args:
         no_cache: Whether to skip caching (default: False, use cache)
@@ -262,14 +343,7 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
             rprint("[cyan]💡 Expected to find images like: flight-*.png, image-*.png, etc.[/cyan]")
             return
         rprint(f"[green]📁 Found {len(images)} images in {images_dir}[/green]")
-        
-    tasks = [(image_path, threshold, skip, take)
-            for threshold in threshold_values
-            for image_path in images]
-    total_count = 0
-    all_results = []
-    all_thresholds = []
-
+    
     # Display threshold info
     if len(threshold_values) == 1:
         threshold_display = str(threshold_values[0])
@@ -278,109 +352,394 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
     else:
         threshold_display = f"{threshold_from}-{threshold_to} ({len(threshold_values)} values)"
     
-    rprint(f"[green]📁 Found {len(images)} images to process with thresholds: {threshold_display}[/green]")
+    total_combinations = len(images) * len(threshold_values)
+    rprint(f"[green]📁 Found {len(images)} images to process with thresholds: {threshold_display} "
+          f"([bold cyan]{total_combinations}[/bold cyan] total combinations)[/green]")
 
-    process_wrapper_with_flag = partial(process_wrapper, no_cache=no_cache)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for task in tasks:
-            image_path, threshold, _, _ = task
-            futures[executor.submit(process_wrapper_with_flag, task)] = task
-            
-        for i, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            image_path, threshold, _, _ = futures[future]
-            try:
-                count, df = future.result()  # Simplified return - no used_cache flag
-            except concurrent.futures.process.BrokenProcessPool as e:
-                rprint(f"[red]❌ Process pool error for {image_path.name} (threshold={threshold}): {e}[/red]")
-                rprint("[yellow]💡 This often indicates an OCR backend issue.[/yellow]")
-                continue
-            except Exception as e:
-                rprint(f"[red]❌ Error processing {image_path.name} (threshold={threshold}): {e}[/red]")
-                continue
-
-            now = datetime.now().strftime('%H:%M:%S')
-            total_count += count
-            rprint(f"[bold blue][{now}] Processed [bold][magenta]{image_path.name}[/magenta][/bold] "
-                  f"(threshold=[yellow]{threshold}[/yellow]) [[green]{i}[/green]/[blue]{len(tasks)}[/blue]]: "
-                  f"[cyan]{count}[/cyan] issues found[/bold blue]")
-            if df is not None and not df.empty:
-                all_results.append(df)
-                all_thresholds.append((threshold, count))
+    # Define progress callback for real-time updates
+    start_time = datetime.now()
+    def progress_callback(current, total, image_path, threshold):
+        """Enhanced progress callback with detailed status and time tracking"""
+        nonlocal start_time
         
-    # Create a pivot table: count of issues per image and threshold
-    if all_results:
-        if pd is None:
-            rprint("[yellow]⚠️  pandas not available - cannot create pivot tables[/yellow]")
-            return
+        if start_time is None:
+            start_time = datetime.now()
             
+        elapsed = datetime.now() - start_time
+        
+        # Format elapsed time in human-readable format
+        elapsed_seconds = int(elapsed.total_seconds())
+        if elapsed_seconds < 60:
+            elapsed_str = f"{elapsed_seconds}s"
+        elif elapsed_seconds < 3600:  # Less than 1 hour
+            minutes = elapsed_seconds // 60
+            seconds = elapsed_seconds % 60
+            elapsed_str = f"{minutes}m {seconds}s"
+        else:  # 1 hour or more
+            hours = elapsed_seconds // 3600
+            minutes = (elapsed_seconds % 3600) // 60
+            seconds = elapsed_seconds % 60
+            elapsed_str = f"{hours}h {minutes}m {seconds}s"
+        
+        if current > 0:
+            avg_time_per_task = elapsed.total_seconds() / current
+            remaining_tasks = total - current
+            eta_seconds = int(avg_time_per_task * remaining_tasks)
+            
+            # Format ETA in human-readable format
+            if eta_seconds < 60:
+                eta_str = f"{eta_seconds}s"
+            elif eta_seconds < 3600:  # Less than 1 hour
+                minutes = eta_seconds // 60
+                seconds = eta_seconds % 60
+                eta_str = f"{minutes}m {seconds}s"
+            else:  # 1 hour or more
+                hours = eta_seconds // 3600
+                minutes = (eta_seconds % 3600) // 60
+                seconds = eta_seconds % 60
+                eta_str = f"{hours}h {minutes}m {seconds}s"
+        else:
+            eta_str = "calculating..."
+            
+        # Get filename from path for display
+        image_name = Path(image_path).name if image_path else "Unknown"
+        
+        # Create visual progress bar using pipe symbols (green for completed, spaces for remaining)
+        bar_width = 20  # Total number of characters in the progress bar
+        completed_pipes = int((current / total) * bar_width)
+        remaining_spaces = bar_width - completed_pipes
+        
+        # Use ANSI color codes: green (\033[32m) for completed pipes, spaces for remaining
+        green_pipes = '\033[32m' + '|' * completed_pipes + '\033[0m'
+        spaces = ' ' * remaining_spaces
+        progress_bar = '[' + green_pipes + spaces + ']'
+        
+        # Show detailed progress with visual bar at the start
+        print(f"\r{progress_bar} Elapsed: {elapsed_str} | ETA: {eta_str} | 🔄 [{current}/{total}] {image_name} (th={threshold})", end='', flush=True)
+        
+        # Add newline on completion
+        if current == total:
+            print(f"\n✅ Completed all {total} combinations in {elapsed_str}")
+
+    # Use the image processor's batch function for all multithreading
+    results = batch_process_images_for_ocr(
+        image_paths=images,
+        thresholds=threshold_values,
+        max_workers=max_workers,
+        no_cache=no_cache,
+        debug=False,
+        progress_callback=progress_callback
+    )
+    
+    # Clear progress line after processing is complete (simplified - nothing to clear now)
+    
+    # Process results and convert to analysis format
+    total_count = 0
+    all_results = []
+    all_thresholds = []
+    
+    for i, (image_path, threshold, ocr_text, success, error_msg) in enumerate(results, 1):
+        if not success:
+            rprint(f"[red]❌ Error processing {image_path.name} (threshold={threshold}): {error_msg}[/red]")
+            continue
+            
+        # Split the OCR text back into lines for analysis
+        lines = ocr_text.splitlines() if ocr_text else []
+        count, df = _analyze_ocr_text(lines, image_path, threshold, skip, take)
+        
+        total_count += count
+        
+        # Show completion status
+        now = datetime.now().strftime('%H:%M:%S')
+
+        
+        if df is not None and not df.empty:
+            all_results.append(df)
+        all_thresholds.append((threshold, count))
+    
+    # Ensure we clear any remaining progress line
+    import sys
+    sys.stdout.write(f"\r{' ' * 120}\r")
+    sys.stdout.flush()
+        
+    # Create analysis tables showing all results (including zero-issue files)
+    if all_results and pd is not None:
         rprint(f"\n[bold green]📊 Total issues found (thresholds: {threshold_display}, "
               f"skip={skip}, take={take}): {total_count}[/bold green]")
-        if total_count == 0:
-            rprint("[bold yellow]✨ No issues found.[/bold yellow]")
-            return
         
+        # Show zero-issue files (perfect candidates) first - moved from end
+        zero_issue_files = []
+        for threshold, count in all_thresholds:
+            if count == 0:
+                # Find files with this threshold that had zero issues
+                threshold_files = [df for df in all_results if not df.empty and df['threshold'].iloc[0] == threshold]
+                for df in threshold_files:
+                    if df['is_issue'].sum() == 0:  # No issues in this file
+                        zero_issue_files.append((df['image'].iloc[0], threshold))
+        
+        if zero_issue_files:
+            rprint(f"\n[bold green]🏆 Perfect Results (Zero Issues - Best Thresholds):[/bold green]")
+            for image_path, threshold in zero_issue_files:
+                image_name = Path(image_path).name
+                rprint(f"  • [cyan]{image_name}[/cyan] with threshold [yellow]{threshold}[/yellow]")
+        
+        # Combine all results
         results_df = pd.concat(all_results, ignore_index=True)
 
-        rprint("[blue]📋 Results DataFrame:[/blue]")
-        print(results_df)
+        # Show complete results with flagged issues
+        rprint("[blue]📋 Complete Results (all lines with issue flags):[/blue]")
+        # Only show issue lines for brevity, but mention total count
+        issue_lines = results_df[results_df['is_issue'] == True] if total_count > 0 else pd.DataFrame()
+        if not issue_lines.empty:
+            print(issue_lines[['image', 'threshold', 'line_number', 'line', 'is_issue']])
+        else:
+            rprint("[green]✨ All lines match expected price patterns![/green]")
 
-        # Create a new DataFrame for the thresholds
-        thresholds_df = pd.DataFrame(all_thresholds, columns=['threshold', 'count'])
-        # Sort by threshold
-        thresholds_df = thresholds_df.sort_values(by='threshold')
-        rprint("[blue]🎯 Thresholds DataFrame:[/blue]")
-        print(thresholds_df)
+        # # Create thresholds summary
+        # thresholds_df = pd.DataFrame(all_thresholds, columns=['threshold', 'count'])
+        # thresholds_df = thresholds_df.sort_values(by='threshold')
+        # rprint(f"\n[blue]🎯 Thresholds Summary ({len(thresholds_df)} thresholds analyzed):[/blue]")
+        # print(thresholds_df)
 
-        pivot = results_df.pivot_table(
-            index='image',
-            columns='threshold',
-            values='line',
-            aggfunc='count',
-            fill_value=0,
-            margins=True,
-            margins_name='Total'
-        )
-        rprint("\n[bold cyan]📊 Pivot table (count of issues per image/threshold, with totals):[/bold cyan]")
-        
-        _display_pivot_table(pivot)
+        # Only show pivot tables if there are issues to analyze
+        if total_count > 0:
+            # Create a pivot table: count of issues per threshold (totals only)
+            # Use all results but count only issues to show zeros for perfect thresholds
+            pivot2 = results_df.groupby('threshold')['is_issue'].sum().to_frame('line')
+            pivot2.loc['Total'] = pivot2['line'].sum()
             
-        # Create a pivot table: count of issues per threshold (totals only)
-        pivot2 = results_df.pivot_table(
-            index='threshold',
-            values='line',
-            aggfunc='count',
-            fill_value=0,
-            margins=True,
-            margins_name='Total'
-        )
-        rprint("\n[bold magenta]📈 Pivot table (count of issues per threshold, with totals):[/bold magenta]")
-        _display_threshold_table(pivot2)
-        
-        # Sort the last pivot table (pivot2) by count ascending
-        pivot2_sorted = pivot2.sort_values(by='line', ascending=True)
-        rprint("\n[bold yellow]🏆 Pivot table (sorted by count ascending):[/bold yellow]")
-        _display_threshold_table(pivot2_sorted)
-        
-        # Find the minimum count (excluding 'Total') in the sorted pivot table
-        min_count = pivot2_sorted.loc[pivot2_sorted.index != 'Total', 'line'].min()
-        # Get all thresholds with this minimum count
-        lowest_thresholds = pivot2_sorted.loc[(pivot2_sorted['line'] == min_count) & 
-                                             (pivot2_sorted.index != 'Total')].index.tolist()
-        rprint(f"\n[bold green]🎯 Threshold(s) with the lowest count ({min_count}): {lowest_thresholds}[/bold green]")
+            # Sort the pivot table by count ascending to find best thresholds
+            pivot2_sorted = pivot2.sort_values(by='line', ascending=True)
+            
+            # Find the minimum count (excluding 'Total') in the sorted pivot table
+            min_count = pivot2_sorted.loc[pivot2_sorted.index != 'Total', 'line'].min()
+            # Get all thresholds with this minimum count
+            lowest_thresholds = pivot2_sorted.loc[(pivot2_sorted['line'] == min_count) & 
+                                                 (pivot2_sorted.index != 'Total')].index.tolist()
 
-        # Print the issues for those thresholds
-        _display_issues_for_thresholds(lowest_thresholds, all_results)
+            # Print the issues for those thresholds FIRST (before Perfect Results)
+            _display_issues_for_thresholds(lowest_thresholds, all_results)
+
+            # Now show the pivot tables - include all results to show zeros
+            pivot = results_df.groupby(['image', 'threshold'])['is_issue'].sum().unstack(fill_value=0)
+            # Add row and column totals
+            pivot['Total'] = pivot.sum(axis=1)
+            pivot.loc['Total'] = pivot.sum(axis=0)
+            
+            rprint("\n[bold cyan]📊 Issues Pivot table (count per image/threshold):[/bold cyan]")
+            _display_pivot_table(pivot)
+            
+            # Export pivot table to CSV
+            try:
+                # Create output directory if it doesn't exist
+                output_dir = Path("data/output/results")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create filename with timestamp and threshold info
+                rprint(f"[dim]💾 Create filename with timestamp and threshold info[/dim]")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                threshold_str = threshold_display.replace(",", "-").replace(" ", "")
+                csv_filename = f"pivot_issues_{timestamp}_{threshold_str}.csv"
+                csv_path = output_dir / csv_filename
+                
+                # Create a copy of pivot with just filenames (not full paths) for CSV export
+                pivot_csv = pivot.copy()
+                pivot_csv.index = pivot_csv.index.map(lambda x: Path(x).name if x != 'Total' else x)
+                
+                # Save to CSV
+                pivot_csv.to_csv(csv_path)
+                rprint(f"[dim]💾 Pivot table saved to: {csv_path}[/dim]")
+
+                # --- Additional: Output filtered pivot with only columns containing at least one zero ---
+                try:
+                    
+                    filtered_csv_path = csv_path.parent / (csv_path.stem + '_zeros_only.csv')
+                    rprint(f"[dim]💾 Creating Zeros Only CSV: {filtered_csv_path}[/dim]")
+                    # Remove 'Total' row and column if present
+                    pivot_data = pivot_csv.copy()
+                    if pivot_data.index[-1] == 'Total':
+                        pivot_data = pivot_data.iloc[:-1, :]
+                    if 'Total' in pivot_data.columns:
+                        pivot_data = pivot_data.drop(columns=['Total'])
+
+                    filtered = pivot_data.copy()
+                    
+                    # # Identify columns (thresholds) with at least one zero (ignoring 'image' column)
+                    data_cols = [col for col in filtered.columns if col != 'image']
+                    # zero_cols = [col for col in data_cols if (filtered[col] == 0).any()]
+
+                    # # Always keep 'image' column at the start if present
+                    # if 'image' in filtered.columns:
+                    #     cols_to_keep = ['image'] + zero_cols
+                    # else:
+                    #     cols_to_keep = zero_cols
+
+                    # Compute Zero_Count for each column (excluding 'image')
+                    zero_count = {col: (filtered[col] == 0).sum() for col in data_cols}
+
+                    # Sort columns (except 'image') by Zero_Count descending (reverse order)
+                    if data_cols:
+                        sorted_zero_cols = sorted(data_cols, key=lambda c: zero_count[c], reverse=True)
+                    else:
+                        sorted_zero_cols = []
+                    if 'image' in filtered.columns:
+                        sorted_cols = ['image'] + sorted_zero_cols
+                    else:
+                        sorted_cols = sorted_zero_cols
+                    filtered = filtered[sorted_cols]
+
+                    # Add total_zeros column after image column (count zeros in each row, excluding 'image' and Zero_Count row)
+                    if data_cols:
+                        if 'image' in filtered.columns:
+                            # Exclude the Zero_Count row for now
+                            data_part = filtered.iloc[:-1] if filtered.index[-1] == 'Zero_Count' else filtered
+                            zero_count_per_row = data_part[sorted_zero_cols].apply(lambda row: (row == 0).sum(), axis=1)
+                            filtered.insert(1, 't0', list(zero_count_per_row) + ([None] if filtered.index[-1] == 'Zero_Count' else []))
+                        else:
+                            data_part = filtered.iloc[:-1] if filtered.index[-1] == 'Zero_Count' else filtered
+                            zero_count_per_row = data_part[sorted_zero_cols].apply(lambda row: (row == 0).sum(), axis=1)
+                            filtered.insert(0, 't0', list(zero_count_per_row) + ([None] if filtered.index[-1] == 'Zero_Count' else []))
+
+                        # Add Zero_Count row at the bottom, matching column count
+                        if 'image' in filtered.columns:
+                            zero_count_row = ['Zero_Count', sum(zero_count.values())] + [zero_count[col] for col in sorted_zero_cols]
+                            filtered.loc['Zero_Count'] = zero_count_row
+                        else:
+                            zero_count_row = [sum(zero_count.values())] + [zero_count[col] for col in sorted_zero_cols]
+                            filtered.loc['Zero_Count'] = zero_count_row
+                    else:
+                        # If no data_cols, output a minimal CSV with just image and t0 columns and a Zero_Count row of zeros
+                        if 'image' in pivot_data.columns:
+                            filtered = pivot_data[['image']].copy()
+                            filtered['t0'] = 0
+                            filtered.loc['Zero_Count'] = ['Zero_Count', 0]
+                        else:
+                            filtered = pd.DataFrame({'t0': [0]*len(pivot_data)})
+                            filtered.loc['Zero_Count'] = [0]
+
+                    # Fix: Ensure all integer columns have only int values (no None/NaN) except for the Zero_Count row, which will have an empty string
+                    int_cols = [col for col in filtered.columns if col != 'image']
+                    if filtered.index[-1] == 'Zero_Count':
+                        # Restore correct Zero_Count values for threshold columns and t0
+                        for col in int_cols:
+                            if col == 't0':
+                                # t0 for Zero_Count row is the sum of zero_count.values()
+                                filtered.at['Zero_Count', col] = sum(zero_count.values()) if zero_count else 0
+                            else:
+                                filtered.at['Zero_Count', col] = int(zero_count.get(col, 0))
+                        # For all other rows, ensure int type and no NaN/None
+                        for col in int_cols:
+                            filtered.loc[filtered.index != 'Zero_Count', col] = filtered.loc[filtered.index != 'Zero_Count', col].apply(lambda x: int(float(x)) if pd.notnull(x) and x != '' else 0)
+                    else:
+                        for col in int_cols:
+                            filtered[col] = filtered[col].apply(lambda x: int(float(x)) if pd.notnull(x) and x != '' else 0)
+                    # Cast DataFrame to object dtype to ensure ints are written as plain ints in CSV
+                    filtered = filtered.astype(object)
+
+                    # Sort rows vertically by t0 (excluding Zero_Count row)
+                    if 'image' in filtered.columns:
+                        data_rows = filtered.iloc[:-1] if filtered.index[-1] == 'Zero_Count' else filtered
+                        data_rows_sorted = data_rows.sort_values(by='t0', ascending=True)
+                        filtered = pd.concat([data_rows_sorted, filtered.iloc[[-1]]]) if filtered.index[-1] == 'Zero_Count' else data_rows_sorted
+                    else:
+                        data_rows = filtered.iloc[:-1] if filtered.index[-1] == 'Zero_Count' else filtered
+                        data_rows_sorted = data_rows.sort_values(by='t0', ascending=True)
+                        filtered = pd.concat([data_rows_sorted, filtered.iloc[[-1]]]) if filtered.index[-1] == 'Zero_Count' else data_rows_sorted
+
+                    # Save to new CSV (always write, even if data_cols is empty)
+                    filtered_csv_path = csv_path.parent / (csv_path.stem + '_zeros_only.csv')
+                    if 'image' in filtered.columns:
+                        filtered.to_csv(filtered_csv_path, index=False)
+                    else:
+                        filtered.to_csv(filtered_csv_path, index=True)
+                    rprint(f"[dim]💾 Filtered (zeros only) pivot table saved to: {filtered_csv_path}[/dim]")
+                    print(filtered_csv_path)
+                    print(filtered)
+                    # --- Additional: Output optimal_thresholds.csv ---
+                    try:
+                        # Only proceed if there are threshold columns (data_cols)
+                        if data_cols and sorted_zero_cols:
+                            optimal_rows = []
+                            # Use the same sorted_zero_cols order as in zeros_only
+                            for idx, row in filtered.iterrows():
+                                if idx == 'Zero_Count':
+                                    continue
+                                image_val = row['image'] if 'image' in filtered.columns else idx
+                                # Find the first threshold column (from left to right) with a zero
+                                found = False
+                                for th in sorted_zero_cols:
+                                    if row[th] == 0:
+                                        chosen_th = th
+                                        chosen_val = 0
+                                        found = True
+                                        break
+                                if not found:
+                                    # No zero found, so find the threshold with the lowest value for this image in filtered
+                                    threshold_cols = [col for col in sorted_zero_cols if col not in ('image', 't0')]
+                                    if threshold_cols:
+                                        min_val = min([row[th] for th in threshold_cols])
+                                        min_thresholds = [th for th in threshold_cols if row[th] == min_val]
+                                        chosen_th = min_thresholds[0] if min_thresholds else None
+                                        chosen_val = min_val
+                                    else:
+                                        chosen_th = None
+                                        chosen_val = None
+
+                                # Set image_val to the cleaned CSV path for this image and threshold
+                                # Format: data/output/cleaned/th_{threshold:03d}{image_basename}_cleaned.csv
+                                if image_val: 
+                                    if chosen_th is None:
+                                        chosen_th='000'    
+                                    image_basename = Path(image_val).stem
+                                    cleaned_csv_name = f"th{int(chosen_th):03d}_{image_basename}_cleaned.csv"
+                                    cleaned_csv_path = str(Path("data/output/cleaned") / cleaned_csv_name)
+                                    image_val = cleaned_csv_path
+                                    
+                                optimal_rows.append([image_val, chosen_th, chosen_val])
+                                
+                            # Write to CSV
+                            # optimal_csv_path = filtered_csv_path.parent / 'optimal_thresholds.csv'
+                            optimal_csv_path = csv_path.parent / (csv_path.stem + '_optimal_thresholds.csv')
+                            import csv
+                            with open(optimal_csv_path, 'w', newline='') as f:
+                                writer = csv.writer(f)
+                                writer.writerow(['image', 'threshold', 'value_used'])
+                                writer.writerows(optimal_rows)
+                                
+                                
+                            rprint(f"[dim]💾 Optimal thresholds saved to: {optimal_csv_path}[/dim]")
+                            # Also copy to 'optimal_thresholds.csv' in the same folder (overwrite if exists)
+                            import shutil
+                            generic_csv_path = optimal_csv_path.parent / 'optimal_thresholds.csv'
+                            shutil.copyfile(optimal_csv_path, generic_csv_path)
+                            rprint(f"[dim]💾 Also copied to: {generic_csv_path}[/dim]")
+                    except Exception as e:
+                        rprint(f"[yellow]⚠️  Could not save optimal_thresholds.csv: {e}[/yellow]")
+                except Exception as e:
+                    rprint(f"[yellow]⚠️  Could not save filtered (zeros only) pivot table: {e}[/yellow]")
+
+                # --- End additional ---
+                
+            except Exception as e:
+                rprint(f"[yellow]⚠️  Could not save pivot table to CSV: {e}[/yellow]")
+            
+            rprint("\n[bold magenta]📈 Issues by Threshold:[/bold magenta]")
+            _display_threshold_table(pivot2)
+            
+            rprint("\n[bold yellow]🏆 Issues by Threshold (sorted by count ascending):[/bold yellow]")
+            _display_threshold_table(pivot2_sorted)
+            
+            # Display chart if available
+            # _display_chart(pivot2)  # Commented out temporarily
+            
+            # Show optimal threshold identification at the end
+            rprint(f"\n[bold green]🎯 Threshold(s) with the lowest issue count ({min_count}): {lowest_thresholds}[/bold green]")
+
+    elif all_results:
+        rprint("[yellow]⚠️  pandas not available - cannot create detailed pivot tables[/yellow]")
         
-    # Display summary with safe task access
-    if tasks:
-        threshold_range = f"thresholds: {threshold_display}"
-    else:
-        threshold_range = f"thresholds: {threshold_display}"
-    rprint(f"\n[bold cyan]📋 Total issues printed ({threshold_range}, skip={skip}, take={take}): {total_count}[/bold cyan]")
-    
-    if 'pivot2' in locals():
-        _display_chart(pivot2)
+    # Display summary
+    rprint(f"\n[bold cyan]📋 Total issues found (thresholds: {threshold_display}, skip={skip}, take={take}): {total_count}[/bold cyan]")
 
 
 def _display_pivot_table(pivot):
@@ -453,12 +812,14 @@ def _display_issues_for_thresholds(lowest_thresholds, all_results):
     for threshold in lowest_thresholds:
         rprint(f"\n[bold magenta]Issues for threshold {threshold}:[/bold magenta]")
         for df in all_results:
-            issues = df[df['threshold'] == threshold]['issue'].tolist()
-            if issues:
-                rprint(f"[bold cyan]{df['image'].iloc[0]}[/bold cyan]")
-                for issue in issues:
-                    issue_number = df[df['issue'] == issue]['issue_number'].iloc[0]
-                    rprint(f"[bold yellow]{issue_number}:[/bold yellow] {issue}")
+            # Filter to only show lines with issues for this threshold
+            issue_data = df[(df['threshold'] == threshold) & (df['is_issue'] == True)]
+            if not issue_data.empty:
+                rprint(f"[bold cyan]{issue_data['image'].iloc[0]}[/bold cyan]")
+                for _, row in issue_data.iterrows():
+                    line_number = row['line_number']
+                    line_content = row['line']
+                    rprint(f"[bold yellow]{line_number}:[/bold yellow] {line_content}")
 
 
 def _display_chart(pivot2):
@@ -482,11 +843,14 @@ def _display_chart(pivot2):
 
 
 if __name__ == "__main__":
+    # Get optimal worker recommendation
+    recommended_workers = estimate_optimal_workers()
+    
     main_parser = argparse.ArgumentParser(description="Optimize OCR thresholds for flight image processing")
     main_parser.add_argument('--no-cache', action='store_true', dest='no_cache',
                             help='Skip cache, perform OCR, and update cache with new results (default: use cache if available)')
-    main_parser.add_argument('--max-workers', type=int, default=4, 
-                            help='Maximum number of worker processes (default: 4)')
+    main_parser.add_argument('--max-workers', type=int, default=recommended_workers, 
+                            help=f'Maximum number of worker processes (default: {recommended_workers} - auto-detected based on {os.cpu_count()} CPU cores)')
     main_parser.add_argument('--thresholds', type=str, default='171-173',
                             help='Threshold values: single (171), range (171-173), list (171,173), or mixed (171,175,177-179) (default: 171-173)')
     main_parser.add_argument('--skip', type=int, default=0,
@@ -499,7 +863,7 @@ if __name__ == "__main__":
                             help='Directory containing images (default: data/input/raw)')
     main_parser.add_argument('--check-ocr', action='store_true',
                             help='Check OCR backend installation and exit')
-    main_parser.set_defaults(max_workers=4)
+    main_parser.set_defaults(max_workers=recommended_workers)
     main_args = main_parser.parse_args()
     
     # Handle --check-ocr option
@@ -509,6 +873,13 @@ if __name__ == "__main__":
         rprint("[cyan]💡 The threshold optimizer is now backend-agnostic and doesn't directly check OCR engines.[/cyan]")
         rprint("[green]✅ Try processing an image to see if OCR is working properly.[/green]")
         exit(0)
+    
+    # Display worker recommendation if using default
+    cpu_cores = os.cpu_count()
+    if main_args.max_workers == recommended_workers:
+        rprint(f"[dim]💻 Auto-detected {cpu_cores} CPU cores, using {main_args.max_workers} workers (recommended)[/dim]")
+    else:
+        rprint(f"[dim]💻 Detected {cpu_cores} CPU cores, using {main_args.max_workers} workers (recommended: {recommended_workers})[/dim]")
     
     batch_process(
         no_cache=main_args.no_cache, 
@@ -558,14 +929,3 @@ class ThresholdOptimizer:
             image_dir=image_dir
         )
     
-    @staticmethod
-    def process_single_image(threshold=None, skip=None, take=None):
-        """
-        Process a single image with specified parameters.
-        
-        Args:
-            threshold: OCR threshold value
-            skip: Number of images to skip
-            take: Number of images to process
-        """
-        return process_image(threshold=threshold, skip=skip, take=take)

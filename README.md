@@ -96,7 +96,10 @@ pip install -r requirements.txt
 **Windows:**
 1. Download from: https://github.com/UB-Mannheim/tesseract/wiki
 2. Install to default location (usually `C:\Program Files\Tesseract-OCR\`)
-3. Add to PATH or update `pytesseract.pytesseract.tesseract_cmd` in code
+3. **Important**: Add Tesseract to your system PATH:
+   - Add `C:\Program Files\Tesseract-OCR` to your PATH environment variable
+   - Restart your terminal/IDE after making PATH changes
+4. Verify with: `tesseract --version`
 
 **Ubuntu/Debian:**
 ```bash
@@ -260,11 +263,15 @@ python test_ocr_utils.py
 ### Common Issues
 
 1. **Tesseract not found**
-   ```python
-   # Add to your Python code if Tesseract is not in PATH
-   import pytesseract
-   pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Windows
-   ```
+   - **Recommended Solution**: Add Tesseract to your system PATH
+     - Windows: Add `C:\Program Files\Tesseract-OCR` to PATH environment variable
+     - Restart terminal/IDE after making PATH changes
+     - Verify with: `tesseract --version`
+   - **Alternative** (not recommended): Hardcode path in your code
+     ```python
+     import pytesseract
+     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+     ```
 
 2. **Import errors after switching platforms**
    - Delete `.venv` folder

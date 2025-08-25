@@ -82,9 +82,8 @@ data/input/raw/*
 
 # Generated cache and output files
 data/cache/
-data/output/processed_images/
-data/output/reports/
-data/output/csv/
+data/output/
+results/
 
 # Test artifacts and integration files
 test_cache_integration.py

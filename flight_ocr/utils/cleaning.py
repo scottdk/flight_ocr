@@ -49,6 +49,12 @@ def clean_lines(lines):
     # Fix common OCR mistakes after the dollar sign
     lines = [fix_letters_after_dollar(line) for line in lines]
     
+    
+    lines = [line.replace('\n\n', '\n') for line in lines]
+    
+    # Remove any characters before a dollar sign
+    lines = [re.sub(r'^AS', 'A$', line) if 'AS' in line else line for line in lines]
+
     # Remove any characters before a dollar sign
     lines = [re.sub(r'^.*?\$', '$', line) if '$' in line else line for line in lines]
 
@@ -60,5 +66,8 @@ def clean_lines(lines):
 
     # insert commas before every block of three digits so that the line matches the price pattern
     lines = [re.sub(r'(?<=\d)(?=(\d{3})+(?!\d))', ',', line) for line in lines]
+
+    # Remove blank lines (empty or whitespace-only)
+    lines = [line for line in lines if line.strip()]
 
     return lines, price_pattern

@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Optional
 from PIL import Image
 import pytesseract
-
+import csv
 # Import cache utilities
-from ..utils.cache import get_raw_cache_file, load_from_cache, save_to_cache, get_processed_image_path
+from ..utils.cache import get_processed_image_path, get_raw_ocr_csv_path
+from ..utils.cleaning import clean_lines
 
 
 class TesseractError(Exception):
@@ -31,7 +32,13 @@ def check_tesseract_installation():
         version = pytesseract.get_tesseract_version()
         return True, f"Tesseract {version} is accessible"
     except pytesseract.TesseractNotFoundError:
-        return False, "Tesseract executable not found. Please install Tesseract OCR and ensure it's in your PATH."
+        error_msg = (
+            "Tesseract executable not found. Please:\n"
+            "1. Install Tesseract OCR from: https://github.com/UB-Mannheim/tesseract/wiki\n"
+            "2. Add Tesseract to your system PATH\n"
+            "3. Restart your terminal/IDE after installation"
+        )
+        return False, error_msg
     except (ImportError, RuntimeError) as e:
         return False, f"Error checking Tesseract: {e}"
 
@@ -87,13 +94,15 @@ def preprocess_image(image_path: Path, debug: bool = False, threshold: int = 180
     return img_bin
 
 
-def run_ocr(img: Image.Image, debug: bool = False, 
-           tess_config: Optional[str] = None) -> str:
+def run_ocr(img: Image.Image, image_path: Path, threshold: int,
+           debug: bool = False, tess_config: Optional[str] = None) -> str:
     """
-    Run Tesseract OCR on a PIL Image with optional config.
+    Run Tesseract OCR on a PIL Image and automatically create CSV output for threshold analysis.
     
     Args:
         img: PIL Image to process
+        image_path: Original image path (for CSV filename generation)
+        threshold: Threshold value used (for CSV filename generation)
         debug: Whether to print debug information
         tess_config: Tesseract configuration string
         
@@ -116,7 +125,12 @@ def run_ocr(img: Image.Image, debug: bool = False,
         return ocr_text
         
     except pytesseract.TesseractNotFoundError as e:
-        error_msg = "Tesseract not found. Please install Tesseract OCR and ensure it's in your PATH."
+        error_msg = (
+            "Tesseract not found. Please:\n"
+            "1. Install Tesseract OCR from: https://github.com/UB-Mannheim/tesseract/wiki\n"
+            "2. Add Tesseract to your system PATH\n"
+            "3. Restart your terminal/IDE after installation"
+        )
         if debug:
             print(f"❌ OCR Error: {error_msg}")
         raise TesseractError(error_msg) from e
@@ -138,70 +152,125 @@ def run_ocr(img: Image.Image, debug: bool = False,
             raise
 
 
-def run_ocr_with_cache(image_path: Path, threshold: int, no_cache: bool = False, 
-                      debug: bool = False, tess_config: Optional[str] = None,
-                      no_preprocess_cache: bool = False) -> str:
+def _save_raw_ocr_to_csv_cache(ocr_text: str, csv_path: str, debug: bool = False):
     """
-    Run OCR with automatic caching support.
-    
-    This function handles all caching logic internally. It will:
-    1. Check cache first (unless no_cache=True)
-    2. If not in cache or cache disabled, perform OCR
-    3. Save results to cache after OCR (unless no_cache=True)
+    Save raw OCR text to CSV cache file (no line numbers, no cleaning).
     
     Args:
-        image_path: Path to the input image
-        threshold: Threshold value for binarization
-        no_cache: If True, skip cache check and don't save to cache
+        ocr_text: The raw OCR text output from Tesseract
+        csv_path: Path to the CSV cache file
         debug: Whether to print debug information
-        tess_config: Tesseract configuration string
-        no_preprocess_cache: If True, disable caching for preprocessed images
+    """
+    csv_file = Path(csv_path)
+    csv_file.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(csv_file, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        
+        # Write header for raw cache format
+        writer.writerow(['ocr_text'])
+        
+        # Write raw OCR text as single field (preserve all newlines)
+        writer.writerow([ocr_text])
+    
+    if debug:
+        print(f"� Saved raw OCR to CSV cache: {csv_path}")
+
+
+def _load_from_csv_cache(csv_path: str) -> Optional[str]:
+    """
+    Load raw OCR text from a CSV cache file.
+    
+    Args:
+        csv_path: Path to the CSV cache file
         
     Returns:
-        str: OCR extracted text
-        
-    Raises:
-        TesseractError: If Tesseract is not accessible or encounters an error
+        str: Raw OCR text if found, None if file doesn't exist or is invalid
     """
-    # Get cache file path
-    raw_cache_file = get_raw_cache_file(image_path, threshold)
+    csv_file = Path(csv_path)
+    if not csv_file.exists():
+        return None
     
-    # Check cache first (unless cache disabled)
-    if not no_cache:
-        cached_ocr_text = load_from_cache(raw_cache_file)
-        if cached_ocr_text is not None:
-            if debug:
-                print(f"✅ Loaded OCR text from cache: {raw_cache_file}")
-            return cached_ocr_text
+    try:
+        with open(csv_file, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.reader(csvfile)
+            header = next(reader, None)  # Skip header
+            if header != ['ocr_text']:
+                return None  # Invalid format
+            
+            # Read the raw OCR text (should be single row)
+            row = next(reader, None)
+            if row and len(row) >= 1:
+                return row[0]  # Raw OCR text is in first column
+        
+        return None
+    except (IOError, csv.Error):
+        return None
+
+
+def _create_cleaned_ocr_csv(raw_ocr_text: str, image_path: Path, threshold: int, debug: bool = False) -> list:
+    """
+    Create cleaned OCR CSV files with line numbers and return cleaned lines.
     
-    # Perform OCR (cache miss or cache disabled)
+    Args:
+        raw_ocr_text: The raw OCR text from Tesseract
+        image_path: Original image path  
+        threshold: Threshold value used
+        debug: Whether to print debug information
+        
+    Returns:
+        list: Cleaned lines from OCR text
+    """
+    # Split raw text into lines
+    raw_lines = raw_ocr_text.split('\n')
+    
+    # Apply cleaning
+    cleaned_lines, _ = clean_lines(raw_lines)
+    
+    # Create output directories
+    project_root = Path(__file__).parent.parent.parent
+    csv_dir = project_root / "data" / "output" / "raw_ocr_csv"
+    cleaned_dir = project_root / "data" / "output" / "cleaned"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate filenames
+    image_stem = image_path.stem
+    csv_filename = f"th{threshold}_{image_stem}.csv"
+    cleaned_filename = f"th{threshold}_{image_stem}_cleaned.csv"
+    
+    # Save CSV with line numbers (raw_ocr_csv directory)
+    csv_path = csv_dir / csv_filename
+    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['line_number', 'ocr_text'])
+        for i, line in enumerate(cleaned_lines, start=1):
+            writer.writerow([i, line])
+    
+    # Save cleaned data (cleaned directory)
+    cleaned_path = cleaned_dir / cleaned_filename
+    with open(cleaned_path, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['line_number', 'cleaned_text'])
+        for i, line in enumerate(cleaned_lines, start=1):
+            writer.writerow([i, line])
+    
     if debug:
-        print(f"🔄 {'Computing' if no_cache else 'Computing'} OCR for {image_path} (threshold={threshold})")
+        print(f"📄 Saved cleaned OCR CSV with {len(cleaned_lines)} lines: {csv_path}")
+        print(f"📄 Saved cleaned data: {cleaned_path}")
     
-    # Preprocess image (with caching unless disabled)
-    img_bin = preprocess_image(image_path, debug=debug, threshold=threshold, no_cache=no_cache or no_preprocess_cache)
-    
-    # Run OCR
-    ocr_text = run_ocr(img_bin, debug=debug, tess_config=tess_config)
-    
-    # Save to cache after successful OCR (unless cache disabled)
-    if not no_cache:
-        save_to_cache(raw_cache_file, ocr_text)
-        if debug:
-            print(f"💾 Saved OCR text to cache: {raw_cache_file}")
-    
-    return ocr_text
+    return cleaned_lines
 
 
 def process_image_for_ocr(image_path: Path, threshold: int = 180, 
                          no_preprocess: bool = False,
                          no_cache: bool = False, debug: bool = False,
-                         tess_config: Optional[str] = None) -> str:
+                         tess_config: Optional[str] = None) -> list:
     """
-    Single point of access for image processing and OCR.
+    Single point of access for image processing and OCR with automatic CSV generation.
     
-    This is the main function that should be used by threshold_optimizer and flight_grid_processor.
-    It handles all preprocessing and caching internally.
+    This function handles all preprocessing, OCR, caching, and CSV generation internally.
+    It will automatically create a CSV file in data/output/raw_ocr_csv/ for threshold analysis.
     
     Args:
         image_path: Path to the input image
@@ -217,33 +286,157 @@ def process_image_for_ocr(image_path: Path, threshold: int = 180,
     Raises:
         TesseractError: If Tesseract is not accessible or encounters an error
     """
-    use_preprocessing = not no_preprocess
-    
     if debug:
-        print(f"🖼️  Processing {image_path} (threshold={threshold}, cache={not no_cache}, preprocess={use_preprocessing})")
+        print(f"🖼️  Processing {image_path} (threshold={threshold}, cache={not no_cache}, preprocess={not no_preprocess})")
     
-    if not use_preprocessing:
-        # Skip preprocessing, use raw image
+    # Handle no preprocessing case
+    if no_preprocess:
         if debug:
             print("⚠️  Skipping preprocessing, using raw image")
         img = Image.open(image_path)
-        ocr_text = run_ocr(img, debug=debug, tess_config=tess_config)
-        return ocr_text
+        raw_ocr_text = run_ocr(img, image_path, threshold, debug=debug, tess_config=tess_config)
+        cleaned_lines = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
+        return [(image_path, threshold, cleaned_lines)]
     
-    if no_cache:
-        # Skip all caching, do direct processing
-        if debug:
-            print("⚠️  Cache disabled, performing direct OCR")
-        img_bin = preprocess_image(image_path, debug=debug, threshold=threshold, no_cache=True)
-        ocr_text = run_ocr(img_bin, debug=debug, tess_config=tess_config)
-        return ocr_text
+    # Handle caching logic using CSV files
+    cache_csv_path = get_raw_ocr_csv_path(image_path, threshold)
     
-    # Use the cached OCR function for normal processing
-    return run_ocr_with_cache(
-        image_path=image_path,
-        threshold=threshold,
-        no_cache=False,
+    # Check cache first (unless cache disabled)
+    if not no_cache:
+        cached_ocr_text = _load_from_csv_cache(cache_csv_path)
+        if cached_ocr_text is not None:
+            if debug:
+                print(f"✅ Loaded OCR text from CSV cache: {cache_csv_path}")
+            # Create cleaned CSV files from cached raw text
+            cleaned_lines = _create_cleaned_ocr_csv(cached_ocr_text, image_path, threshold, debug=debug)
+            return [(image_path, threshold, cleaned_lines)]
+    
+    # Process image and run OCR
+    if debug:
+        print(f"� Computing OCR for {image_path} (threshold={threshold})")
+    
+    # Preprocess image (with caching unless disabled)
+    img_bin = preprocess_image(image_path, debug=debug, threshold=threshold, no_cache=no_cache)
+    
+    # Run OCR to get raw text
+    raw_ocr_text = run_ocr(img_bin, image_path, threshold, debug=debug, tess_config=tess_config)
+    
+    # Save to CSV cache after successful OCR (unless cache disabled)
+    if not no_cache:
+        _save_raw_ocr_to_csv_cache(raw_ocr_text, cache_csv_path, debug=debug)
+    
+    # Create cleaned CSV files and return cleaned lines
+    cleaned_lines = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
+    return [(image_path, threshold, cleaned_lines)]
+
+
+def batch_process_images_for_ocr(image_paths, thresholds, max_workers=4, 
+                                no_preprocess=False, no_cache=False, 
+                                debug=False, tess_config=None, progress_callback=None):
+    """
+    Process multiple images with multiple thresholds using multiprocessing.
+    
+    This function handles all multithreading for OCR processing, keeping 
+    threshold_optimizer agnostic to threading implementation.
+    
+    Args:
+        image_paths: List or set of Path objects for images to process
+        thresholds: List of threshold values to test
+        max_workers: Maximum number of worker processes
+        no_preprocess: If True, skip image preprocessing
+        no_cache: If True, disable all caching
+        debug: Whether to print debug information
+        tess_config: Tesseract configuration string
+        progress_callback: Optional callback function to report progress: callback(current, total, image_path, threshold)
+        
+    Returns:
+        List of tuples: [(image_path, threshold, ocr_text, success, error_msg), ...]
+        
+    Raises:
+        TesseractError: If Tesseract is not accessible or encounters an error
+    """
+    import concurrent.futures
+    from functools import partial
+    
+    # Create all combinations of image_path and threshold
+    tasks = [(image_path, threshold) 
+             for image_path in image_paths 
+             for threshold in thresholds]
+    
+    results = []
+    
+    # Create partial function with fixed parameters
+    process_func = partial(
+        _process_single_image_task,
+        no_preprocess=no_preprocess,
+        no_cache=no_cache,
         debug=debug,
-        tess_config=tess_config,
-        no_preprocess_cache=False
+        tess_config=tess_config
     )
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_task = {
+            executor.submit(process_func, task): task 
+            for task in tasks
+        }
+        
+        # Collect results as they complete with progress reporting
+        completed = 0
+        total_tasks = len(tasks)
+        for future in concurrent.futures.as_completed(future_to_task):
+            task = future_to_task[future]
+            image_path, threshold = task
+            completed += 1
+            
+            # Report progress if callback provided
+            if progress_callback:
+                progress_callback(completed, total_tasks, image_path, threshold)
+            
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as exc:
+                error_result = (image_path, threshold, "", False, str(exc))
+                results.append(error_result)
+    
+    return results
+
+
+def _process_single_image_task(task, no_preprocess=False, no_cache=False, 
+                              debug=False, tess_config=None):
+    """
+    Process a single image-threshold combination task.
+    
+    This is a separate function to support multiprocessing serialization.
+    
+    Args:
+        task: Tuple of (image_path, threshold)
+        no_preprocess: If True, skip image preprocessing
+        no_cache: If True, disable all caching
+        debug: Whether to print debug information
+        tess_config: Tesseract configuration string
+        
+    Returns:
+        Tuple: (image_path, threshold, ocr_text, success, error_msg)
+    """
+    image_path, threshold = task
+    
+    try:
+        result_list = process_image_for_ocr(
+            image_path=image_path,
+            threshold=threshold,
+            no_preprocess=no_preprocess,
+            no_cache=no_cache,
+            debug=debug,
+            tess_config=tess_config
+        )
+        # Extract cleaned lines from the first (and only) result tuple
+        _, _, cleaned_lines = result_list[0]
+        ocr_text = '\n'.join(cleaned_lines)
+        return (image_path, threshold, ocr_text, True, "")
+        
+    except TesseractError as e:
+        return (image_path, threshold, "", False, e.message)
+    except Exception as e:
+        return (image_path, threshold, "", False, str(e))

@@ -93,7 +93,7 @@ from rich.table import Table     # For formatted tables
 ```python
 from flight_ocr.utils.cache import get_cache_file, load_from_cache, save_to_cache
 from flight_ocr.utils.cleaning import clean_lines
-from flight_ocr.core.image_processor import preprocess_image, run_ocr
+from flight_ocr.core.image_processor import process_image_for_ocr
 ```
 
 ---
