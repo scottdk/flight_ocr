@@ -5,9 +5,9 @@ Command-line interface for flight OCR processing.
 import argparse
 from pathlib import Path
 
-from ..core.data_extractor import configure_logging
-from ..core.flight_grid_processor import FlightGridOCR
-from .threshold import add_threshold_parser
+from flight_ocr.core.data_extractor import configure_logging
+from flight_ocr.core.flight_grid_processor import FlightGridOCR
+from flight_ocr.cli.threshold import add_threshold_parser
 
 
 def create_main_parser():
@@ -25,9 +25,9 @@ def create_main_parser():
     
     # OCR processing subcommand (default)
     ocr_parser = subparsers.add_parser('process', help='Process images with OCR')
-    ocr_parser.add_argument('--img-dir', type=str, 
-                           default=str(Path.cwd() / "data" / "input" / "raw"),
-                           help='Directory containing images')
+    ocr_parser.add_argument('--optimal_thresholds_csv', type=str, 
+                           default=str(Path.cwd() / "data" / "output" / "results" / "optimal_thresholds.csv"),
+                           help='Path to the CSV file with optimal thresholds')
     ocr_parser.add_argument('--output-csv', type=str, default="flight_prices.csv",
                            help='Output CSV file name')
     ocr_parser.add_argument('--output-dir', type=str,
@@ -47,10 +47,8 @@ def run_ocr_processing(args):
     configure_logging(args.debug)
     
     output_dir = Path(args.output_dir) if args.output_dir else None
-    ocr = FlightGridOCR(args.img_dir, debug=args.debug, output_dir=output_dir, mock_mode=args.mock)
+    ocr = FlightGridOCR(args.optimal_thresholds_csv, debug=args.debug, output_dir=output_dir, mock_mode=args.mock)
     ocr.process_images()
-    ocr.write_csv(args.output_csv)
-
 
 def main():
     """
@@ -72,18 +70,18 @@ def main():
             # Execute the chosen subcommand
             args.func(args)
         return
-    
+
     # Legacy mode - use the old argument parser for backward compatibility
     legacy_parser = argparse.ArgumentParser(
         description="Extract flight grid prices from images using OCR.")
     legacy_parser.add_argument('--debug', action='store_true', help='Enable debug output')
-    legacy_parser.add_argument('--img-dir', type=str, 
-                               default=str(Path.cwd() / "data" / "input" / "raw"),
-                               help='Directory containing images')
+    legacy_parser.add_argument('--optimal-thresholds-csv', type=str, 
+                               default=str(Path.cwd() / "data" / "output" / "results" / "optimal_thresholds.csv"),
+                               help='Path to the CSV file with optimal thresholds')
     legacy_parser.add_argument('--output-csv', type=str, default="flight_prices.csv",
                                help='Output CSV file name')
     legacy_parser.add_argument('--output-dir', type=str,
-                               help='Output directory (defaults to data/output)')
+                               help='Output directory (defaults to data/output/grid_results)')
     legacy_parser.add_argument('--mock', action='store_true', 
                                help='Use mock OCR data for testing (no tesseract required)')
     

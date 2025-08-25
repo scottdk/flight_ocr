@@ -30,7 +30,8 @@ def get_cache_file(image_path, threshold, cache_dir=None):
     
     cache_dir.mkdir(parents=True, exist_ok=True)
     
-    cache_file = cache_dir / f"{Path(image_path).name}_thr{threshold}.pkl"
+    image_stem = Path(image_path).stem
+    cache_file = cache_dir / f"{image_stem}_th{threshold}_cache.pkl"
     return str(cache_file)
 
 
@@ -50,7 +51,7 @@ def get_raw_cache_file(image_path, threshold):
     cache_dir.mkdir(parents=True, exist_ok=True)
     
     image_stem = Path(image_path).stem
-    cache_file = cache_dir / f"{image_stem}_{threshold}.pkl"
+    cache_file = cache_dir / f"{image_stem}_th{threshold}_raw.pkl"
     return str(cache_file)
 
 
@@ -70,7 +71,7 @@ def get_processed_image_path(image_path, threshold):
     processed_dir.mkdir(parents=True, exist_ok=True)
     
     image_path = Path(image_path)
-    processed_file = processed_dir / f"{image_path.stem}_{threshold}{image_path.suffix}"
+    processed_file = processed_dir / f"{image_path.stem}_th{threshold}_processed{image_path.suffix}"
     return str(processed_file)
 
 
@@ -90,7 +91,7 @@ def get_raw_ocr_csv_path(image_path, threshold):
     raw_ocr_dir.mkdir(parents=True, exist_ok=True)
     
     image_stem = Path(image_path).stem
-    csv_file = raw_ocr_dir / f"th{threshold}_{image_stem}_raw.csv"
+    csv_file = raw_ocr_dir / f"{image_stem}_th{threshold}_raw.csv"
     return str(csv_file)
 
 

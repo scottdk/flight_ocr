@@ -7,6 +7,7 @@ from typing import Optional
 from PIL import Image
 import pytesseract
 import csv
+import os
 # Import cache utilities
 from ..utils.cache import get_processed_image_path, get_raw_ocr_csv_path
 from ..utils.cleaning import clean_lines
@@ -58,6 +59,8 @@ def preprocess_image(image_path: Path, debug: bool = False, threshold: int = 180
     Returns:
         PIL Image: Binarized PIL Image ready for OCR
     """
+    processed_path_str = get_processed_image_path(image_path, threshold)
+    processed_path = Path(processed_path_str)
     # Check cache for preprocessed image first (unless cache read is disabled)
     if not no_cache:
         processed_path_str = get_processed_image_path(image_path, threshold)
@@ -73,23 +76,14 @@ def preprocess_image(image_path: Path, debug: bool = False, threshold: int = 180
     img_bin = img_gray.point(lambda x: 255 if x > threshold else 0, mode='1')
     
     # Always save to cache after processing (regardless of no_cache setting)
-    processed_path_str = get_processed_image_path(image_path, threshold)
-    processed_path = Path(processed_path_str)
-    processed_path.parent.mkdir(parents=True, exist_ok=True)
+    # original_basename = image_path.stem
+    # ext = image_path.suffix.lstrip('.')
+    # processed_filename = f"{original_basename}_th{threshold}_processed.{ext}"
+    # processed_path = Path(processed_path.parent) / processed_filename
+    # processed_path.parent.mkdir(parents=True, exist_ok=True)
     img_bin.save(processed_path)
     if debug:
         print(f"💾 Saved preprocessed image to cache: {processed_path}")
-    
-    # Also save for debug if requested
-    if debug:
-        if output_dir is None:
-            project_root = Path(__file__).parent.parent.parent
-            output_dir = project_root / "data" / "output" / "processed_images"
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = output_dir / ("_" + image_path.name)
-        img_bin.save(debug_path)
-        print(f"🐛 Saved debug preprocessed image: {debug_path}")
     
     return img_bin
 
@@ -236,9 +230,8 @@ def _create_cleaned_ocr_csv(raw_ocr_text: str, image_path: Path, threshold: int,
     
     # Generate filenames
     image_stem = image_path.stem
-    csv_filename = f"th{threshold}_{image_stem}.csv"
-    cleaned_filename = f"th{threshold}_{image_stem}_cleaned.csv"
-    
+    csv_filename = f"{image_stem}_th{threshold}_raw.csv"
+    cleaned_filename = f"{image_stem}_th{threshold}_cleaned.csv"
     # Save CSV with line numbers (raw_ocr_csv directory)
     csv_path = csv_dir / csv_filename
     with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -246,7 +239,6 @@ def _create_cleaned_ocr_csv(raw_ocr_text: str, image_path: Path, threshold: int,
         writer.writerow(['line_number', 'ocr_text'])
         for i, line in enumerate(cleaned_lines, start=1):
             writer.writerow([i, line])
-    
     # Save cleaned data (cleaned directory)
     cleaned_path = cleaned_dir / cleaned_filename
     with open(cleaned_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -254,12 +246,10 @@ def _create_cleaned_ocr_csv(raw_ocr_text: str, image_path: Path, threshold: int,
         writer.writerow(['line_number', 'cleaned_text'])
         for i, line in enumerate(cleaned_lines, start=1):
             writer.writerow([i, line])
-    
     if debug:
         print(f"📄 Saved cleaned OCR CSV with {len(cleaned_lines)} lines: {csv_path}")
         print(f"📄 Saved cleaned data: {cleaned_path}")
-    
-    return cleaned_lines
+    return cleaned_lines, cleaned_path
 
 
 def process_image_for_ocr(image_path: Path, threshold: int = 180, 
@@ -289,18 +279,20 @@ def process_image_for_ocr(image_path: Path, threshold: int = 180,
     if debug:
         print(f"🖼️  Processing {image_path} (threshold={threshold}, cache={not no_cache}, preprocess={not no_preprocess})")
     
+    # Handle caching logic using CSV files
+    cache_csv_path = get_raw_ocr_csv_path(image_path, threshold)
+    processed_image_path = get_processed_image_path(image_path, threshold)
+    
     # Handle no preprocessing case
     if no_preprocess:
         if debug:
             print("⚠️  Skipping preprocessing, using raw image")
         img = Image.open(image_path)
         raw_ocr_text = run_ocr(img, image_path, threshold, debug=debug, tess_config=tess_config)
-        cleaned_lines = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
-        return [(image_path, threshold, cleaned_lines)]
-    
-    # Handle caching logic using CSV files
-    cache_csv_path = get_raw_ocr_csv_path(image_path, threshold)
-    
+        cleaned_lines, clean_csv = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
+        return [(image_path, threshold, cleaned_lines, clean_csv, cache_csv_path, processed_image_path)]
+
+
     # Check cache first (unless cache disabled)
     if not no_cache:
         cached_ocr_text = _load_from_csv_cache(cache_csv_path)
@@ -308,8 +300,8 @@ def process_image_for_ocr(image_path: Path, threshold: int = 180,
             if debug:
                 print(f"✅ Loaded OCR text from CSV cache: {cache_csv_path}")
             # Create cleaned CSV files from cached raw text
-            cleaned_lines = _create_cleaned_ocr_csv(cached_ocr_text, image_path, threshold, debug=debug)
-            return [(image_path, threshold, cleaned_lines)]
+            cleaned_lines, clean_csv = _create_cleaned_ocr_csv(cached_ocr_text, image_path, threshold, debug=debug)
+            return [(image_path, threshold, cleaned_lines, clean_csv, cache_csv_path, processed_image_path)]
     
     # Process image and run OCR
     if debug:
@@ -326,8 +318,8 @@ def process_image_for_ocr(image_path: Path, threshold: int = 180,
         _save_raw_ocr_to_csv_cache(raw_ocr_text, cache_csv_path, debug=debug)
     
     # Create cleaned CSV files and return cleaned lines
-    cleaned_lines = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
-    return [(image_path, threshold, cleaned_lines)]
+    cleaned_lines, clean_csv  = _create_cleaned_ocr_csv(raw_ocr_text, image_path, threshold, debug=debug)
+    return [(image_path, threshold, cleaned_lines, clean_csv, cache_csv_path, processed_image_path)]
 
 
 def batch_process_images_for_ocr(image_paths, thresholds, max_workers=4, 
@@ -432,11 +424,13 @@ def _process_single_image_task(task, no_preprocess=False, no_cache=False,
             tess_config=tess_config
         )
         # Extract cleaned lines from the first (and only) result tuple
-        _, _, cleaned_lines = result_list[0]
+        _, _, cleaned_lines, cleaned_path, raw_path, processed_path = result_list[0]
         ocr_text = '\n'.join(cleaned_lines)
-        return (image_path, threshold, ocr_text, True, "")
-        
+        return (image_path, threshold, ocr_text, True, "", cleaned_path, raw_path, processed_path)
+
     except TesseractError as e:
-        return (image_path, threshold, "", False, e.message)
+        return (image_path, threshold, "", False, e.message, "")
     except Exception as e:
-        return (image_path, threshold, "", False, str(e))
+        return (image_path, threshold, "", False, str(e), "")
+
+

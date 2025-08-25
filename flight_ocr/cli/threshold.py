@@ -2,7 +2,9 @@
 CLI command for threshold optimization analysis.
 """
 
-from ..analysis.threshold_optimizer import batch_process
+
+from flight_ocr.analysis.threshold_optimizer import batch_process
+
 
 
 def add_threshold_parser(subparsers):
@@ -47,8 +49,8 @@ def add_threshold_parser(subparsers):
         help='Single image file to process (overrides --image-dir)'
     )
     threshold_parser.add_argument(
-        '--image-dir', 
-        type=str, 
+        '--image-dir',
+        type=str,
         default='data/input/raw',
         help='Directory containing images (default: data/input/raw)'
     )

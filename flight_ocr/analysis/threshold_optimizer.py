@@ -127,88 +127,6 @@ def parse_threshold_values(threshold_param):
     # Remove duplicates and sort
     return sorted(list(set(thresholds)))
 
-def process_image(threshold=None, skip=None, take=None, no_cache=False):
-    """
-    Process a single image with OCR preprocessing and extraction.
-    
-    Args:
-        threshold: Binarization threshold (default from args)
-        skip: Number of rows to skip (default from args) 
-        take: Number of rows to take (default from args)
-        no_cache: Skip cache, perform OCR, and update cache with new results
-        
-    Returns:
-        tuple: (count, DataFrame) containing count of filtered lines and DataFrame with results
-    """
-    parser = argparse.ArgumentParser(description="Test OCR preprocessing and extraction.")
-    parser.add_argument('image', nargs='?', default='data/input/raw/flight-2025-08-23 10-24-54.png',
-                        help='Path to the image file to test (default: data/input/raw/flight-2025-08-23 10-24-12.png)')
-    parser.add_argument('--tess-config', type=str, 
-                        default="-c tessedit_char_whitelist=A$0123456789,.abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ :/-–— --psm 6 --oem 3", 
-                        help='OCR engine configuration string')
-    parser.add_argument('--threshold', type=int, default=170, help='Threshold for binarization (default: 170)')
-    parser.add_argument('--skip', type=int, default=0, help='number of rows to skip (default: 0)')
-    parser.add_argument('--take', type=int, default=0, help='number of rows to take (default: 0)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug output')
-    
-    parsed_args = parser.parse_args()
-
-    threshold_val = threshold if threshold is not None else parsed_args.threshold
-    image_path = Path(parsed_args.image)
-
-    # Use the single point of access for OCR processing
-    try:
-        rprint(f"[cyan]🔄 Processing image:[/cyan] [bold magenta]{image_path}[/bold magenta] [yellow](threshold={threshold_val})[/yellow]")
-        result_list = process_image_for_ocr(
-            image_path=image_path,
-            threshold=threshold_val,
-            no_cache=no_cache,
-            debug=parsed_args.debug,
-            tess_config=parsed_args.tess_config
-        )
-        # Extract cleaned lines from the first (and only) result tuple
-        _, _, cleaned_lines = result_list[0]
-        ocr_text = '\n'.join(cleaned_lines)
-    except Exception as e:
-        # Log OCR error with context
-        rprint(f"[orange3]⚠️  OCR error processing {image_path}: {str(e)}[/orange3]")
-        # Handle OCR errors generically - the threshold optimizer shouldn't know about specific OCR backends
-        rprint(f"[red]❌ OCR Error: {str(e)}[/red]")
-        raise
-    
-    # Process the OCR text (threshold optimizer's responsibility)
-    
-    numbered_lines = list(enumerate(lines, start=1))
-    skip_val = skip if skip is not None else parsed_args.skip
-    take_val = take if take is not None else parsed_args.take
-    
-    if skip_val == 0:
-        lines_to_check = numbered_lines
-    else:
-        lines_to_check = numbered_lines[skip_val:skip_val+take_val]
-        
-    filtered = [(num, line) for num, line in lines_to_check if not price_pattern.match(line.strip())]
-    
-    if pd is None:
-        return 0, None
-        
-    if all(line[1].strip()[:3].isalpha() for line in filtered):
-        count = 0
-        df = pd.DataFrame()
-    else:
-        filtered = [(num, line) for num, line in filtered if not line.strip()[:3].isalnum()]
-        count = sum(1 for _, line in filtered if not line.strip()[:3].isalpha())
-        df = pd.DataFrame({
-            'image': [str(image_path)] * len(filtered),
-            'threshold': [threshold_val] * len(filtered),
-            'skip': [skip_val] * len(filtered),
-            'take': [take_val] * len(filtered),
-            'line_number': [num for num, _ in filtered],
-            'line': [line for _, line in filtered]
-        })
-    return count, df
-
-
 def _analyze_ocr_text(lines, image_path, threshold, skip, take):
     """
     Analyze OCR text to identify issues and create analysis DataFrame.
@@ -289,6 +207,24 @@ def _analyze_ocr_text(lines, image_path, threshold, skip, take):
     
     return issue_count, df
 
+def to_unix_relative_path(full_path: str) -> str:
+    """
+    Convert a full path to a workspace-relative, unix-style path.
+    Workspace path is fetched from the FLIGHT_OCR_WORKSPACE environment variable,
+    or defaults to the current working directory.
+    """
+    workspace_path = os.getcwd()
+    try:
+        rel_path = Path(full_path).relative_to(workspace_path)
+    except ValueError:
+        # If full_path is not under workspace_path, just use the filename
+        rel_path = Path(full_path).name
+    return str(rel_path).replace("\\", "/")
+
+# Example usage:
+# os.environ['FLIGHT_OCR_WORKSPACE'] = r"C:\Users\scott\OneDrive\repos\flight_ocr"
+# print(to_unix_relative_path(r"C:\Users\scott\OneDrive\repos\flight_ocr\data\cache\processed_images\flight-2025-08-23 11-34-46_156.png"))
+# Output: data/cache/processed_images/flight-2025-08-23 11-34-46_156.png
 
 def batch_process(no_cache=False, max_workers=2, thresholds="171-173", 
                  skip=0, take=9, image_file=None, image_dir=None):
@@ -319,7 +255,11 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
     except ValueError as e:
         rprint(f"[red]❌ Error parsing thresholds: {e}[/red]")
         return
-    
+
+    if not threshold_values:
+        rprint(f"[red]❌ No valid threshold values were parsed from: '{thresholds}'. Please provide a valid threshold (e.g., '140-180', '150,160,170').[/red]")
+        raise ValueError(f"No valid threshold values parsed from: '{thresholds}'")
+
     threshold_from = min(threshold_values)
     threshold_to = max(threshold_values)
     
@@ -437,25 +377,27 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
     total_count = 0
     all_results = []
     all_thresholds = []
-    
-    for i, (image_path, threshold, ocr_text, success, error_msg) in enumerate(results, 1):
+    dic_cleaned_and_raw_paths = {}
+
+    for i, (image_path, threshold, ocr_text, success, error_msg, cleaned_path, raw_path, processed_path) in enumerate(results, 1):
         if not success:
             rprint(f"[red]❌ Error processing {image_path.name} (threshold={threshold}): {error_msg}[/red]")
             continue
-            
+        
+        dic_index = (Path(image_path).name, threshold)
+        dic_cleaned_and_raw_paths[dic_index] = (to_unix_relative_path(cleaned_path), to_unix_relative_path(raw_path), image_path, to_unix_relative_path(processed_path))
+
         # Split the OCR text back into lines for analysis
         lines = ocr_text.splitlines() if ocr_text else []
         count, df = _analyze_ocr_text(lines, image_path, threshold, skip, take)
         
         total_count += count
-        
-        # Show completion status
-        now = datetime.now().strftime('%H:%M:%S')
-
+        all_thresholds.append((threshold, count))
         
         if df is not None and not df.empty:
+            df['cleaned_path'] = str(cleaned_path) if cleaned_path is not None else None
+            df['raw_path'] = str(raw_path) if raw_path is not None else None
             all_results.append(df)
-        all_thresholds.append((threshold, count))
     
     # Ensure we clear any remaining progress line
     import sys
@@ -489,11 +431,11 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
         # Show complete results with flagged issues
         rprint("[blue]📋 Complete Results (all lines with issue flags):[/blue]")
         # Only show issue lines for brevity, but mention total count
-        issue_lines = results_df[results_df['is_issue'] == True] if total_count > 0 else pd.DataFrame()
-        if not issue_lines.empty:
-            print(issue_lines[['image', 'threshold', 'line_number', 'line', 'is_issue']])
-        else:
-            rprint("[green]✨ All lines match expected price patterns![/green]")
+        # issue_lines = results_df[results_df['is_issue'] == True] if total_count > 0 else pd.DataFrame()
+        # if not issue_lines.empty:
+        #     print(issue_lines[['image', 'threshold', 'line_number', 'line', 'is_issue']])
+        # else:
+        #     rprint("[green]✨ All lines match expected price patterns![/green]")
 
         # # Create thresholds summary
         # thresholds_df = pd.DataFrame(all_thresholds, columns=['threshold', 'count'])
@@ -655,6 +597,8 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
                     rprint(f"[dim]💾 Filtered (zeros only) pivot table saved to: {filtered_csv_path}[/dim]")
                     print(filtered_csv_path)
                     print(filtered)
+                    
+                    
                     # --- Additional: Output optimal_thresholds.csv ---
                     try:
                         # Only proceed if there are threshold columns (data_cols)
@@ -694,16 +638,19 @@ def batch_process(no_cache=False, max_workers=2, thresholds="171-173",
                                     cleaned_csv_name = f"th{int(chosen_th):03d}_{image_basename}_cleaned.csv"
                                     cleaned_csv_path = str(Path("data/output/cleaned") / cleaned_csv_name)
                                     image_val = cleaned_csv_path
-                                    
-                                optimal_rows.append([image_val, chosen_th, chosen_val])
-                                
+                                cleaned_path = dic_cleaned_and_raw_paths.get((idx, int(chosen_th)), (None, None))[0]
+                                raw_path = dic_cleaned_and_raw_paths.get((idx, int(chosen_th)), (None, None))[1]
+                                image_full_path = dic_cleaned_and_raw_paths.get((idx, int(chosen_th)), (None, None, None))[2]
+                                processed_path = dic_cleaned_and_raw_paths.get((idx, int(chosen_th)), (None, None, None, None))[3]
+                                optimal_rows.append([idx, chosen_th, chosen_val, cleaned_path, raw_path, image_full_path, processed_path])
+
                             # Write to CSV
                             # optimal_csv_path = filtered_csv_path.parent / 'optimal_thresholds.csv'
                             optimal_csv_path = csv_path.parent / (csv_path.stem + '_optimal_thresholds.csv')
                             import csv
                             with open(optimal_csv_path, 'w', newline='') as f:
                                 writer = csv.writer(f)
-                                writer.writerow(['image', 'threshold', 'value_used'])
+                                writer.writerow(['image', 'threshold', 'value_used', 'clean_data', 'raw_data', 'original_image', 'processed_image'])
                                 writer.writerows(optimal_rows)
                                 
                                 
